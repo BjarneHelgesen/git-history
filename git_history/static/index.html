@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-history</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="banner"></div>
+<div id="spinner" class="hidden"><div class="spinner-dot"></div></div>
+<div id="toolbar">
+  <img src="/static/logo.svg" id="toolbar-logo" alt="git-history">
+  <span id="toolbar-right">
+    <button id="btn-squash" class="hidden">Squash</button>
+    <button id="btn-stash" class="hidden">Stash</button>
+    <button id="btn-stash-pop" class="hidden">Stash Pop</button>
+    <button id="btn-refresh">Refresh</button>
+    <button id="btn-quit" title="Quit">&times;</button>
+  </span>
+</div>
+<div id="columns">
+  <div id="commits-panel">
+    <h2 id="commits-title"><span id="commits-title-text">Commit History</span><button id="commits-help-btn" title="Help">?</button></h2>
+    <div id="commits-list"></div>
+  </div>
+  <div id="branch-history-panel">
+    <h2 id="branch-history-title"><span id="branch-history-title-text">Branch History</span><button id="branch-history-help-btn" title="Help">?</button></h2>
+    <div id="branch-history-controls">
+      <button id="btn-undo">Undo</button>
+      <button id="btn-redo">Redo</button>
+      <label><input type="checkbox" id="group-consec-rebases"> Group consecutive rebases</label>
+    </div>
+    <div id="branch-history-list"></div>
+  </div>
+</div>
+<div id="conflict-modal" class="modal hidden">
+  <div class="modal-content">
+    <h3>Merge conflict</h3>
+    <p>Resolve in your editor, then:</p>
+    <ul id="conflict-files"></ul>
+    <div class="modal-actions">
+      <button id="btn-abort">Cancel</button>
+      <button id="btn-continue">Continue</button>
+    </div>
+  </div>
+</div>
+<div id="commits-help-modal" class="modal hidden">
+  <div class="modal-content help-modal-content">
+    <h3>Commit History</h3>
+    <p>Shows the commits on your current branch, newest first.</p>
+    <p>You can do the following rebase operations:</p>
+    <ul class="help-list">
+      <li>To select multiple commits, click the first one and shift-click the second. All commits in between will be selected. Press Escape to unselect.</li>
+      <li>Drag one or more commits up or down to reorder them. Press Escape to cancel.</li>
+      <li>Hover a commit to reveal the Fixup button (&#x21B5;), which folds that commit into the one below it, discarding its commit message.</li>
+      <li>Double-click a commit message to edit it in place (Reword). Click outside the edit box or press Ctrl+Enter (Cmd+Enter on Mac) to confirm. Press Escape to cancel.</li>
+      <li>When two or more commits are selected, click the Squash button to combine them into a single commit where the commit message is the combined messages of all the commits.</li>
+    </ul>
+    <p>If a rebase produces a merge conflict, a dialog will appear letting you resolve the conflict in your editor and then continue, or abort and return to the original state.</p>
+    <p>There is a Refresh button, but you will not need it often as the commit list refreshes automatically when you switch back to this tab.</p>
+    <p>The Quit button in the top-right stops the git-history server and attempts to close the tab. Closing the browser tab without clicking the Quit button will not stop the git-history server. It can still be stopped by ctrl-c in the CMD window</p>
+    <p><em>Tip: drag related commits together first, then use squash or fixup.</em></p>
+    <div class="modal-actions">
+      <button id="commits-help-close">Close</button>
+    </div>
+  </div>
+</div>
+<div id="branch-history-help-modal" class="modal hidden">
+  <div class="modal-content help-modal-content">
+    <h3>Branch History</h3>
+    <p>Branch History is an <strong>undo stack</strong> for your local branch. Each entry is the tip of the branch, sorted by chronologically. The Branch History begins when the local branch was created.</p>
+    <p>Each of the following actions moves the current branch and updates the Commit History pane:</p>
+    <ul class="help-list">
+      <li><strong>Undo</strong> go one step backwards in Branch History.</li>
+      <li><strong>Redo</strong> go one step forward in Branch History. </li>
+      <li><strong>Double-clicking</strong> reset to given entry in the Branch History.</li>
+    </ul>
+    <p>The Branch History contains only unique modifications to the branch. If a branch is reset to an previous state, the new tip of the branch is not unique and will not be an entry in Branch History. Undo, Redo and Reset actions are non-unique modifications and are not added as new entries to the Branch History. </p>
+    <p>Branch History shows the local branch changes — commits, rebases, resets — regardless of whether they were made inside or outside git-history.</p>
+    <p>When you pull or fetch/rebase from the remote, the update to the local branch appears as a single entry in the Branch History, not as a series of individual remote commits.</p>
+    <p><em>Tip: A failed rebase can be recovered by executing "git rebase --abort".</em></p>
+    <div class="modal-actions">
+      <button id="branch-history-help-close">Close</button>
+    </div>
+  </div>
+</div>
+<div id="diff-pane" class="hidden"><div id="diff-resize"></div><div id="diff-files"></div><pre id="diff-content"></pre></div>
+<div id="footer"><a href="/manual" target="_blank">Manual</a> &mdash; Built by <a href="http://helgesen.software" target="_blank" rel="noopener">Helgesen Software AS</a></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

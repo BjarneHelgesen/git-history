@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-history — Manual</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; color: #222; background: #f5f5f5; }
+.page { max-width: 720px; margin: 0 auto; padding: 32px 24px 64px; }
+h1 { font-size: 22px; margin-bottom: 24px; }
+h2 { font-size: 16px; margin: 32px 0 10px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+p { line-height: 1.6; margin-top: 8px; }
+ul { margin: 8px 0 0 20px; }
+li { line-height: 1.6; margin: 4px 0; }
+code, pre { font-family: monospace; background: #eee; border-radius: 3px; }
+code { padding: 1px 5px; font-size: 13px; }
+pre { padding: 10px 14px; margin-top: 8px; overflow-x: auto; font-size: 13px; }
+em { color: #555; }
+strong { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>git-history — Manual</h1>
+
+  <h2>What is git-history?</h2>
+  <p>git-history is a local web app for interactively changing your git history, and it includes a full undo/redo stack. It lets you reorder, squash, fixup, and reword commits through a drag-and-drop interface in the browser.</p>
+  <p>It is intended for keeping feature branches tidy. All operations affect only the current local branch — nothing is pushed to the remote. If the branch has been pushed to a remote before the history rewrite, it will may be force pushed to the remote.</p>
+
+  <h2>Requirements</h2>
+  <ul>
+    <li>Python 3.9 or later</li>
+    <li>Flask 3.0 or later (installed automatically)</li>
+    <li>Git</li>
+  </ul>
+
+  <h2>Installation</h2>
+  <pre>pip install git+https://github.com/BjarneHelgesen/git-history</pre>
+  <p>After installation, the <code>git-history</code> command is available in your terminal. If it is not found, your Python scripts directory may not be on your PATH. Find the location with:</p>
+  <pre>python -m site --user-scripts</pre>
+  <p>Add that directory to your PATH, or run the tool directly with:</p>
+  <pre>python -m git_history</pre>
+
+  <h2>Starting the app</h2>
+  <p>Run from inside any git repository:</p>
+  <pre>git-history [&lt;start&gt;] [--port &lt;N&gt;]</pre>
+  <ul>
+    <li><code>&lt;start&gt;</code> — oldest commit to show (default: <code>HEAD~200</code>)</li>
+    <li><code>--port &lt;N&gt;</code> — TCP port for the server (default: auto-assigned)</li>
+  </ul>
+  <p>The browser opens automatically. The terminal shows the URL and port.</p>
+
+  <h2>Uncommitted changes</h2>
+  <p>Reorder, squash, fixup, reword, and reset are all blocked when the working tree has uncommitted changes. Use <strong>Stash</strong> to set them aside, perform your rebase operations, then <strong>Stash Pop</strong> to restore them.</p>
+
+  <h2>Toolbar</h2>
+  <p><strong>Squash</strong> — appears when two or more commits are selected. Combines them into one commit; the message is the combined messages of all selected commits.</p>
+  <p><strong>Stash</strong> — appears when there are uncommitted changes. Runs <code>git stash push</code>, clearing the working tree so rebase operations can proceed.</p>
+  <p><strong>Stash Pop</strong> — appears when a stash exists. Runs <code>git stash pop</code>, restoring the previously stashed changes. Requires a clean working tree.</p>
+  <p><strong>Refresh</strong> — reloads the commit list and branch history from the repository. The list also refreshes automatically when you switch back to the browser tab, so you rarely need this button.</p>
+  <p><strong>Quit (×)</strong> — stops the git-history server and attempts to close the tab. Closing the browser tab without clicking Quit does not stop the server; it can still be stopped with Ctrl+C in the terminal.</p>
+
+  <h2>Commit History</h2>
+  <p>Shows commits on your current branch, newest first.</p>
+  <ul>
+    <li><strong>Reorder</strong> — drag one or more commits up or down. Press Escape to cancel.</li>
+    <li><strong>Select multiple</strong> — click a commit, then Shift-click another to select the range. Press Escape to deselect.</li>
+    <li><strong>Squash</strong> — select two or more commits, then click the Squash button in the toolbar. The messages of all selected commits are combined.</li>
+    <li><strong>Fixup</strong> — hover a commit to reveal the Fixup button (↵). Folds that commit into the one below it, discarding its message.</li>
+    <li><strong>Reword</strong> — double-click a commit message to edit it in place. Confirm with Ctrl+Enter (Cmd+Enter on Mac) or by clicking outside. Press Escape to cancel.</li>
+  </ul>
+  <p>If a rebase produces a merge conflict, a dialog appears. Resolve the conflict in your editor, then click Continue — or click Cancel to abort and return to the original state.</p>
+  <p><em>Tip: drag related commits together first, then squash or fixup.</em></p>
+
+  <h2>Branch History</h2>
+  <p>An undo stack for your local branch. Each entry is a unique state of the branch tip, recorded chronologically from when the branch was created.</p>
+  <ul>
+    <li><strong>Undo / Redo</strong> — step backwards or forwards through history.</li>
+    <li><strong>Double-click</strong> an entry to reset the branch to that state. Requires a clean working tree.</li>
+    <li><strong>Group consecutive rebases</strong> — collapses adjacent rebase entries into one, reducing noise.</li>
+  </ul>
+  <p>The branch history reflects all local changes — commits, rebases, resets — whether made inside or outside git-history. When you pull or rebase from the remote, the update appears as a single entry.</p>
+  <p><em>Tip: a failed rebase can always be recovered with <code>git rebase --abort</code> in the terminal.</em></p>
+</div>
+</body>
+</html>
