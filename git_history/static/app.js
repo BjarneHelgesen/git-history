@@ -17,6 +17,7 @@
   let anchor = null;        // shift-click anchor hash
   let busy = false;
   let dragState = null;     // {hashes, fromIndex, placeholder}
+  let pendingSelectIdx = null; // after fixup, select commit at this index
   let branchHistoryEntries = [];   // current filtered branch history list
   let headBranchHistoryIdx = -1;   // index of HEAD in branchHistoryEntries
 
@@ -36,15 +37,17 @@
   const $commitsTitle = document.getElementById("commits-title-text");
   const $groupConsecRebases = document.getElementById("group-consec-rebases");
   const $conflictModal = document.getElementById("conflict-modal");
+  const $submoduleModal = document.getElementById("submodule-modal");
   const $conflictFiles = document.getElementById("conflict-files");
   const $btnAbort    = document.getElementById("btn-abort");
   const $btnContinue = document.getElementById("btn-continue");
   const $commitsHelpModal = document.getElementById("commits-help-modal");
   const $branchHistoryHelpModal = document.getElementById("branch-history-help-modal");
-  const $diffPane    = document.getElementById("diff-pane");
-  const $diffResize  = document.getElementById("diff-resize");
-  const $diffFiles   = document.getElementById("diff-files");
-  const $diffContent = document.getElementById("diff-content");
+  const $diffPane      = document.getElementById("diff-pane");
+  const $diffResize    = document.getElementById("diff-resize");
+  const $diffFiles     = document.getElementById("diff-files");
+  const $diffContent   = document.getElementById("diff-content");
+  const $branchSelect  = document.getElementById("branch-select");
 
   // ---- API helpers ----
   function headers(extra) {
@@ -82,10 +85,31 @@
     $branchHistoryTitle.textContent  = (state.branch || "(detached)") + " Branch History";
     $commitsTitle.textContent = (state.branch || "(detached)") + " Commit History";
 
-    // Dirty / stash buttons
+    // Branch dropdown
+    $branchSelect.innerHTML = "";
+    if (!state.branch) {
+      const opt = document.createElement("option");
+      opt.value = ""; opt.disabled = true; opt.selected = true;
+      opt.textContent = "(detached)";
+      $branchSelect.appendChild(opt);
+    }
+    (state.branches || []).forEach(function (b) {
+      const opt = document.createElement("option");
+      opt.value = b; opt.selected = b === state.branch; opt.textContent = b;
+      $branchSelect.appendChild(opt);
+    });
+    $branchSelect.disabled = state.dirty || state.rebase_in_progress;
+
+    // Dirty / detached / rebase / stash buttons
     if (state.dirty) {
       showBanner("Working tree has uncommitted changes.", "warning");
       $btnStash.classList.remove("hidden");
+    } else if (!state.branch) {
+      showBanner("HEAD is detached. Select a branch from the dropdown.", "warning");
+      $btnStash.classList.add("hidden");
+    } else if (state.rebase_in_progress && state.conflict_files.length === 0) {
+      showBanner("A rebase is in progress. Finish or abort it in your terminal to continue.", "warning");
+      $btnStash.classList.add("hidden");
     } else {
       if ($banner.className === "warning") clearBanner();
       $btnStash.classList.add("hidden");
@@ -111,9 +135,20 @@
     updateActionBar();
   }
 
+  function showSubmoduleModal(onOk) {
+    $submoduleModal.classList.remove("hidden");
+    document.getElementById("btn-submodule-ok").onclick = async () => {
+      $submoduleModal.classList.add("hidden");
+      await onOk();
+    };
+    document.getElementById("btn-submodule-cancel").onclick = () => {
+      $submoduleModal.classList.add("hidden");
+    };
+  }
+
   function renderCommits() {
     $commitsList.innerHTML = "";
-    const mutDisabled = state.dirty || state.rebase_in_progress;
+    const mutDisabled = state.dirty || state.rebase_in_progress || !state.branch;
     state.commits.forEach(function (c, idx) {
       const row = document.createElement("div");
       row.className = "commit-row" + (selected.has(c.hash) ? " selected" : "") + (c.is_head ? " is-head" : "");
@@ -181,6 +216,7 @@
       btnFixup.disabled = mutDisabled || idx === state.commits.length - 1;
       btnFixup.addEventListener("click", function (e) {
         e.stopPropagation();
+        pendingSelectIdx = idx - 1;
         doRebase("fixup", {hashes: [c.hash]});
       });
       actions.appendChild(btnFixup);
@@ -214,7 +250,7 @@
     const headHash = state.commits.length > 0 ? state.commits[0].hash : "";
     branchHistoryEntries = entries;
     headBranchHistoryIdx = entries.findIndex(function (e) { return e.hash === headHash; });
-    const canMutate = !state.dirty && !state.rebase_in_progress;
+    const canMutate = !state.dirty && !state.rebase_in_progress && !!state.branch;
     $btnUndo.disabled = !canMutate || headBranchHistoryIdx === -1 || headBranchHistoryIdx === entries.length - 1;
     $btnRedo.disabled = !canMutate || headBranchHistoryIdx <= 0;
     entries.forEach(function (entry) {
@@ -244,7 +280,8 @@
       tsSpan.textContent = entry.timestamp ? entry.timestamp.slice(0, 10) : "";
       row.appendChild(tsSpan);
 
-      row.addEventListener("dblclick", function () {
+      row.addEventListener("dblclick", function (e) {
+        e.preventDefault();
         if (!isHead) doReset(entry.hash);
       });
       $branchHistoryList.appendChild(row);
@@ -281,7 +318,7 @@
   function updateActionBar() {
     if (selected.size >= 2) {
       $btnSquash.classList.remove("hidden");
-      const mutDisabled = state.dirty || state.rebase_in_progress;
+      const mutDisabled = state.dirty || state.rebase_in_progress || !state.branch;
       $btnSquash.disabled = mutDisabled;
     } else {
       $btnSquash.classList.add("hidden");
@@ -304,6 +341,7 @@
       ta.removeEventListener("keydown", onKey);
       ta.removeEventListener("blur", onBlur);
       if (save && ta.value !== commit.message) {
+        pendingSelectIdx = state.commits.findIndex(function (c) { return c.hash === commit.hash; });
         doRebase("reword", {hashes: [commit.hash], new_message: ta.value});
       } else {
         renderCommits();
@@ -337,7 +375,7 @@
   }
 
   function onDragStart(e) {
-    if (state.dirty || state.rebase_in_progress || busy) return;
+    if (state.dirty || state.rebase_in_progress || !state.branch || busy) return;
     e.preventDefault();
     const row = e.target.closest(".commit-row");
     const hash = row.dataset.hash;
@@ -409,6 +447,7 @@
     const originalOrder = originalRows.map(function (r) { return r.dataset.hash; });
 
     if (newOrder.join(",") === originalOrder.join(",")) return;
+    if (selected.size === 1) pendingSelectIdx = newOrder.indexOf([...selected][0]);
     doRebase("move", {order: newOrder});
   }
 
@@ -476,7 +515,12 @@
       // Prune selection to commits that still exist.
       const validHashes = new Set(state.commits.map(function (c) { return c.hash; }));
       selected = new Set(Array.from(selected).filter(function (h) { return validHashes.has(h); }));
-      if (selected.size === 0 && state.commits.length > 0) {
+      if (pendingSelectIdx !== null) {
+        const idx = Math.max(0, Math.min(pendingSelectIdx, state.commits.length - 1));
+        selected = new Set([state.commits[idx].hash]);
+        anchor = state.commits[idx].hash;
+        pendingSelectIdx = null;
+      } else if (selected.size === 0 && state.commits.length > 0) {
         selected = new Set([state.commits[0].hash]);
         anchor = state.commits[0].hash;
       }
@@ -491,7 +535,11 @@
       }
       render();
     } else {
-      showBanner(data.error || data.message || "Operation failed", "error");
+      const errorMessages = {
+        "gitmodules_differ": "Reset to a different set of subrepos is not supported.",
+        "gitmodules_in_range": "Cannot reorder: range contains a commit that changes .gitmodules.",
+      };
+      showBanner(errorMessages[data.error] || data.message || data.error || "Operation failed", "error");
     }
   }
 
@@ -499,8 +547,19 @@
   async function doReset(hash) {
     if (busy) return;
     showSpinner();
-    try { handleResponse(await apiPost("/api/reset", {hash: hash})); }
-    catch (err) { showBanner("Reset failed: " + err.message, "error"); }
+    try {
+      const data = await apiPost("/api/reset", {hash: hash});
+      handleResponse(data);
+      if (data.ok && data.submodule_update_suggested) {
+        hideSpinner();
+        showSubmoduleModal(async () => {
+          showSpinner();
+          handleResponse(await apiPost("/api/submodule/update"));
+          hideSpinner();
+        });
+        return;
+      }
+    } catch (err) { showBanner("Reset failed: " + err.message, "error"); }
     hideSpinner();
   }
 
@@ -534,6 +593,7 @@
 
   $btnSquash.addEventListener("click", function () {
     if (selected.size < 2) return;
+    pendingSelectIdx = state.commits.findIndex(function (c) { return selected.has(c.hash); });
     doRebase("squash", {hashes: Array.from(selected)});
   });
 
@@ -564,6 +624,27 @@
     if (e.key === "Escape") {
       if (dragState) cancelDrag();
     }
+  });
+
+  $branchSelect.addEventListener("change", async function () {
+    if (busy) return;
+    selected.clear();
+    anchor = null;
+    showSpinner();
+    try {
+      const data = await apiPost("/api/switch", {branch: this.value});
+      handleResponse(data);
+      if (data.ok && data.submodule_update_suggested) {
+        hideSpinner();
+        showSubmoduleModal(async () => {
+          showSpinner();
+          handleResponse(await apiPost("/api/submodule/update"));
+          hideSpinner();
+        });
+        return;
+      }
+    } catch (err) { showBanner("Switch failed: " + err.message, "error"); }
+    hideSpinner();
   });
 
   $groupConsecRebases.addEventListener("change", renderBranchHistory);

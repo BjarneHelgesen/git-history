@@ -25,14 +25,17 @@ strong { font-weight: 600; }
   <h1>git-history — Manual</h1>
 
   <h2>What is git-history?</h2>
-  <p>git-history is a local web app for interactively changing your git history, and it includes a full undo/redo stack. It lets you reorder, squash, fixup, and reword commits through a drag-and-drop interface in the browser.</p>
-  <p>It is intended for keeping feature branches tidy. All operations affect only the current local branch — nothing is pushed to the remote. If the branch has been pushed to a remote before the history rewrite, it will may be force pushed to the remote.</p>
+  <p>git-history is a local web app for interactively rewriting your git history, and it includes a full undo/redo stack. It lets you reorder, squash, fixup, and reword commits through a drag-and-drop interface in the browser.</p>
+  <p>It is intended for keeping feature branches tidy. All operations affect only the current local branch — nothing is pushed to the remote. If the rewritten parts of a branch has been pushed to a remote before the history rewrite, 
+    it can be force pushed to the remote, but this is not recommended if other people are working on the same branch.</p>
+  <p>All changes are applied to the repo <strong> immediately </strong> and all changes can be undone:</p>
+
 
   <h2>Requirements</h2>
   <ul>
     <li>Python 3.9 or later</li>
     <li>Flask 3.0 or later (installed automatically)</li>
-    <li>Git</li>
+    <li>Git 2.26 or later</li>
   </ul>
 
   <h2>Installation</h2>
@@ -44,10 +47,11 @@ strong { font-weight: 600; }
 
   <h2>Starting the app</h2>
   <p>Run from inside any git repository:</p>
-  <pre>git-history [&lt;start&gt;] [--port &lt;N&gt;]</pre>
+  <pre>git-history [&lt;start&gt;] [--port &lt;N&gt;] [--clear-log]</pre>
   <ul>
     <li><code>&lt;start&gt;</code> — oldest commit to show (default: <code>HEAD~200</code>)</li>
     <li><code>--port &lt;N&gt;</code> — TCP port for the server (default: auto-assigned)</li>
+    <li><code>--clear-log</code> — delete the operation log (<code>~/.git-history.log</code>) and exit</li>
   </ul>
   <p>The browser opens automatically. The terminal shows the URL and port.</p>
 
@@ -55,6 +59,7 @@ strong { font-weight: 600; }
   <p>Reorder, squash, fixup, reword, and reset are all blocked when the working tree has uncommitted changes. Use <strong>Stash</strong> to set them aside, perform your rebase operations, then <strong>Stash Pop</strong> to restore them.</p>
 
   <h2>Toolbar</h2>
+  <p><strong>Branch</strong> — a dropdown showing the current branch. Select a different local branch to switch to it. Blocked when there are uncommitted changes or a rebase is in progress.</p>
   <p><strong>Squash</strong> — appears when two or more commits are selected. Combines them into one commit; the message is the combined messages of all selected commits.</p>
   <p><strong>Stash</strong> — appears when there are uncommitted changes. Runs <code>git stash push</code>, clearing the working tree so rebase operations can proceed.</p>
   <p><strong>Stash Pop</strong> — appears when a stash exists. Runs <code>git stash pop</code>, restoring the previously stashed changes. Requires a clean working tree.</p>
@@ -82,6 +87,10 @@ strong { font-weight: 600; }
   </ul>
   <p>The branch history reflects all local changes — commits, rebases, resets — whether made inside or outside git-history. When you pull or rebase from the remote, the update appears as a single entry.</p>
   <p><em>Tip: a failed rebase can always be recovered with <code>git rebase --abort</code> in the terminal.</em></p>
+
+  <h2>Submodules</h2>
+  <p>Moving commits that touch <code>.gitmodules</code> is blocked — reordering such commits can corrupt submodule references and must be done manually.</p>
+  <p>Resetting to a branch history entry is blocked when the target has a different <code>.gitmodules</code> file. If the reset succeeds but changes submodule commit pointers, a banner appears offering to run <code>git submodule update --init</code>.</p>
 </div>
 </body>
 </html>

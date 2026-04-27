@@ -12,16 +12,18 @@ Dependencies: Flask, stdlib. No build step, no JS bundler.
 
 ```
 git-history/
-├── git_history.py        # CLI entry, Flask app, HTTP handlers, GitHistory class
-├── editor.py             # 6-line helper for GIT_SEQUENCE_EDITOR / GIT_EDITOR
-├── git-history.bat       # Windows launcher
-└── static/
-    ├── index.html
-    ├── app.js
-    └── style.css
+├── git_history/
+│   ├── __init__.py      # GitHistory class + Flask app factory + CLI entry point
+│   ├── __main__.py      # python -m git_history entry point
+│   └── static/
+│       ├── index.html
+│       ├── app.js
+│       ├── style.css
+│       └── manual.html
+└── editor.py            # 6-line helper for GIT_SEQUENCE_EDITOR / GIT_EDITOR
 ```
 
-Everything lives in `git_history.py`: the `GitHistory` class, the Flask app factory, and the CLI entry point.
+Everything lives in `git_history/__init__.py`: the `GitHistory` class, the Flask app factory, and the CLI entry point.
 
 ## CLI
 
@@ -33,15 +35,17 @@ git-history [<start>] [--port <N>]
 |----------|-----------|---------|
 | `start` | `HEAD~200` | Any git revision. Commits in `start..HEAD` are shown & editable. If `HEAD~200` fails (shallow history), falls back to the repo root. |
 | `--port` | auto | TCP port on `127.0.0.1`. If omitted, picks a free port. |
+| `--clear-log` | — | Delete `~/.git-history.log` and exit. |
 
 ## Startup
 
-1. `git rev-parse --git-dir` — must succeed; otherwise exit with error.
-2. `git symbolic-ref --quiet HEAD` — must succeed; detached HEAD is rejected.
-3. Resolve `start` to a full commit hash. If `HEAD~200` fails, use the repo root.
-4. Pick a port: bind a socket to `('127.0.0.1', 0)`, read the port, close, reuse. If `--port` is given, use it.
-5. Generate a 32-char token: `secrets.token_urlsafe(24)`.
-6. Start Flask app bound to `127.0.0.1:<port>`.
+1. `git --version` — must be >= 2.26; otherwise exit with error.
+2. `git rev-parse --git-dir` — must succeed; otherwise exit with error.
+3. `git symbolic-ref --quiet HEAD` — must succeed; detached HEAD is rejected.
+4. Resolve `start` to a full commit hash. If `HEAD~200` fails, use the repo root.
+5. Pick a port: bind a socket to `('127.0.0.1', 0)`, read the port, close, reuse. If `--port` is given, use it.
+6. Generate a 32-char token: `secrets.token_urlsafe(24)`.
+7. Start Flask app bound to `127.0.0.1:<port>`.
 8. Print: `git-history running at http://127.0.0.1:<port>/?t=<token>  —  Ctrl+C to quit`.
 9. `webbrowser.open(url)`.
 
@@ -212,6 +216,19 @@ Request body:
 { "hash": "<full hash>" }
 ```
 
+#### `POST /api/switch`
+
+Request body:
+```json
+{ "branch": "<branch name>" }
+```
+
+Calls `switch_branch()`. Returns state on success, or an error with code `dirty_tree`, `rebase_in_progress`, `invalid_branch`, or `git_failed`.
+
+#### `POST /api/submodule/update`
+
+Calls `git submodule update --init`. Returns state or `git_failed`.
+
 #### `POST /api/quit`
 ```python
 @app.route("/api/quit", methods=["POST"])
@@ -251,6 +268,7 @@ All endpoints return JSON. Mutations return:
 {
   "ok": true,
   "branch": "main",
+  "branches": ["main", "feature-x"],
   "dirty": false,
   "has_stash": false,
   "rebase_in_progress": false,
@@ -264,7 +282,7 @@ Errors:
 ```json
 {
   "ok": false,
-  "error": "dirty_tree" | "no_stash" | "nothing_to_stash" | "invalid_request" | "git_failed" | "start_update_failed"
+  "error": "dirty_tree" | "no_stash" | "nothing_to_stash" | "invalid_request" | "git_failed" | "start_update_failed" | "gitmodules_differ" | "gitmodules_in_range" | "invalid_branch" | "rebase_in_progress"
 }
 ```
 
@@ -289,6 +307,7 @@ Token auth failures are 403 with empty body. No global exception handler — Fla
 {
   "ok": true,
   "branch": "main",
+  "branches": ["main", "feature-x"],
   "dirty": false,
   "has_stash": false,
   "rebase_in_progress": false,
@@ -315,10 +334,13 @@ Token auth failures are 403 with empty body. No global exception handler — Fla
 }
 ```
 
+- `branch`: currently checked-out branch name.
+- `branches`: all local branch names; used to populate the branch switcher dropdown.
 - `commits`: from `git log <start>..HEAD --format=...`, newest first.
 - `branch_history`: from `git reflog show --format=...`, newest first, deduped (keep oldest occurrence of each hash).
 - `rebase_in_progress` is true iff `.git/rebase-merge` or `.git/rebase-apply` exists.
 - `conflict_files` is populated from `git diff --name-only --diff-filter=U` when `rebase_in_progress` is true.
+- `submodule_update_suggested` (optional, boolean): present and `true` when a `reset` changed the set of gitlinks, indicating the UI should offer to run `git submodule update --init`.
 
 ## Backend: `GitHistory` class
 
@@ -353,7 +375,13 @@ class GitHistory:
         """git rebase --abort."""
     
     def reset(self, hash: str) -> dict:
-        """git reset --hard <hash>."""
+        """git reset --hard <hash>. Returns submodule_update_suggested if gitlinks changed."""
+    
+    def switch_branch(self, branch: str) -> dict:
+        """git switch <branch>. Updates _start to HEAD~200 of new branch."""
+    
+    def submodule_update(self) -> dict:
+        """git submodule update --init."""
     
     def show(self, hash: str) -> dict:
         """Returns {ok, info, diff} from git show."""
@@ -420,11 +448,19 @@ The single selected hash H. If H is the root commit, refuse with `invalid_reques
 
 ### `reword`
 
-The single selected hash H. In the todo:
-- H: `reword`
+The single selected hash H. The new message is written to a temp file. In the todo:
+- H: `pick`
+- After H's pick line: `exec git commit --amend --allow-empty -F <msg_path>`
 - Everything else: `pick`
 
-When git invokes `GIT_EDITOR` on `COMMIT_EDITMSG`, the helper overwrites it with `GIT_HISTORY_MSG`.
+This avoids relying on `GIT_EDITOR` for the message; the exec line applies the new message directly.
+
+## Submodule Guards
+
+Two guards prevent `.gitmodules` / gitlink corruption:
+
+1. **move**: before building the todo, check whether any moved commit touches `.gitmodules` (via `git diff-tree --name-only`). If yes, refuse with `gitmodules_in_range`.
+2. **reset**: compare `.gitmodules` content at HEAD vs the target hash. If they differ, refuse with `gitmodules_differ`. If they are the same but the set of gitlinks (160000-mode tree entries) differs, allow the reset and return `submodule_update_suggested: true` in the state so the UI can offer a `git submodule update --init` button.
 
 ## Editor Helper
 
@@ -444,7 +480,7 @@ Lives as a real file on disk (not written out at runtime). Invoked directly by g
 └─────────────────────────────────┴──────────────────────────┘
 ```
 
-Two columns, status banner above (dirty tree, errors), spinner overlay while any request is in flight.
+Toolbar above the columns: logo, branch switcher dropdown, then action buttons. Status banner below toolbar (dirty tree, errors). Spinner overlay while any request is in flight.
 
 ## UI: Commit row
 
@@ -460,6 +496,10 @@ Left to right:
 Row states: default, selected (light blue), dragging, editing message.
 
 ## UI: Interactions
+
+### Branch switcher
+
+A `<select>` dropdown in the toolbar populated from `state.branches`. The current branch is pre-selected. Changing the selection → `POST /api/switch` with `{ "branch": "<name>" }`. Disabled while the working tree is dirty or a rebase is in progress.
 
 ### Selection
 
@@ -492,19 +532,7 @@ Double-click the message → inline input. Enter or blur-with-changes → `POST 
 
 ### Conflict dialog
 
-Modal overlay, shown whenever `state.rebase_in_progress` is true:
-
-```
-┌─────────────────────────────────────┐
-│  Merge conflict                     │
-│                                     │
-│  Resolve in your editor, then:      │
-│  src/foo.c                          │
-│  src/bar.c                          │
-│                                     │
-│  [Cancel]              [Continue]   │
-└─────────────────────────────────────┘
-```
+A modal overlay will be shown whenever `state.rebase_in_progress` is true, prompting the user to either resolve the conflict outside git-history and then click "Continue" or press "Cancel" which will abort the rebase (resetting to the state before the rebase was attempted.) 
 
 - **Cancel** → `POST /api/rebase/abort`.
 - **Continue** → `POST /api/rebase/continue`. If still conflicted, the dialog stays open.
@@ -538,6 +566,7 @@ Modal overlay, shown whenever `state.rebase_in_progress` is true:
 - **Stash button**: visible in the dirty-tree banner (when dirty). Click → `POST /api/stash`. After success, the banner clears.
 - **Stash pop button**: visible when `state.has_stash` is true and tree is clean. Click → `POST /api/stash/pop`. After success, the tree becomes dirty (changes restored).
 - **Refresh button**: top-right, always visible. Click → `POST /api/refresh`, re-fetches state. Also fires automatically on `window.focus` so terminal changes are picked up.
+- **Submodule update button**: shown in a banner when `state.submodule_update_suggested` is true. Click → `POST /api/submodule/update`. After success, the banner clears.
 
 ### Diff pane
 
@@ -549,12 +578,22 @@ Non-conflict errors show a dismissible red banner above the columns. The list ke
 
 `dirty_tree` errors show a persistent yellow banner with a **Stash** button.
 
+## Logging
+
+After every successful mutating operation (rebase, rebase_continue, reset), the backend appends one line to `~/.git-history.log`:
+
+```
+<iso-timestamp> <branch> <full-hash>
+```
+
+The file is append-only and shared across all repos and branches. The footer contains a **Log** link (`/log`) that serves the file as plain text (no token required).
+
 ## Implementation notes
 
 1. **Full hashes everywhere internally.** Short hashes only for display.
 2. **File encoding.** All temp files (TODO_PATH, MSG_PATH) are written with `encoding="utf-8"` and `newline="\n"`. Git rejects CRLF todo files on Windows.
-3. **Forward slashes in env-var paths.** `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR` use `quote_cmd`, which replaces `\` with `/` and double-quotes paths. Git's bundled bash on Windows parses this.
-4. **Temp file lifetime.** Per-run temp directory created at startup, removed via `atexit`.
+3. **Forward slashes in env-var paths.** `GIT_SEQUENCE_EDITOR` and `GIT_EDITOR` are set using `shlex.quote`. Git's bundled bash on Windows parses this correctly.
+4. **Temp file lifetime.** Per-operation temp files created via `tempfile.mkstemp`; deleted in a `finally` block after the rebase call.
 5. **Dirty-tree check.** `git status --porcelain --untracked-files=no`. Any non-empty output means dirty.
 6. **Conflict file list.** `git diff --name-only --diff-filter=U` when `.git/rebase-merge` exists.
 7. **Token check failure.** `X-Token` mismatch → HTTP 403, empty body.

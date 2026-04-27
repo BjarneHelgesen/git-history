@@ -7,7 +7,7 @@ the backend must expose and the behavior every UI command must produce.
 The backend is expected to be a single class:
 
     from git_history import GitHistory
-    gh = GitHistory(repo_path, start="HEAD~200")
+    gh = GitHistory(repo_path)
 
 Every method returns a JSON-serializable dict. On success the dict is the
 "state" object (the same shape as GET /api/state). On failure the dict has
@@ -16,7 +16,6 @@ Every method returns a JSON-serializable dict. On success the dict is the
 Methods exercised by these tests:
 
     gh.read_state()                     -> state
-    gh.refresh()                        -> state            (alias of read_state)
     gh.stash()                          -> state | error
     gh.stash_pop()                      -> state | error
     gh.rebase(operation, hashes=None,
@@ -60,6 +59,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from make_test_repo import (
     COMMITS,
+    create_lib_repo,
     init_repo,
     make_commit,
 )
@@ -84,11 +84,14 @@ def _build_template_repo() -> Path:
         return _TEMPLATE_REPO
 
     template_dir = Path(tempfile.mkdtemp(prefix="git-history-template-"))
+    lib = template_dir / "lib"
+    lib_hash1, lib_hash2 = create_lib_repo(lib)
+    sub = {"url": str(lib), "hash1": lib_hash1, "hash2": lib_hash2}
     repo = template_dir / "repo"
     repo.mkdir()
     init_repo(repo)
     for i, (msg, author_key, files, tag) in enumerate(COMMITS):
-        make_commit(repo, i, msg, author_key, files, tag)
+        make_commit(repo, i, msg, author_key, files, tag, sub=sub)
     atexit.register(lambda: shutil.rmtree(template_dir, ignore_errors=True))
     _TEMPLATE_REPO = repo
     return repo
@@ -175,12 +178,6 @@ class StateTests(StandardRepoTest):
             self.assertIn("hash", entry)
             self.assertIn("label", entry)
             self.assertIn("timestamp", entry)
-
-    def test_refresh_returns_same_shape_as_read_state(self):
-        s = self.gh.read_state()
-        r = self.gh.refresh()
-        self.assertEqual(set(r.keys()), set(s.keys()))
-        self.assertEqual(r["commits"][0]["hash"], s["commits"][0]["hash"])
 
     def test_state_reports_dirty_tree(self):
         self.make_dirty()
@@ -302,6 +299,51 @@ class SquashTests(StandardRepoTest):
 
 
 # ---------------------------------------------------------------------------
+# Rebase: consecutive commit validation (squash / fixup)
+# ---------------------------------------------------------------------------
+
+class ConsecutiveCommitValidationTests(StandardRepoTest):
+
+    def test_squash_non_adjacent_commits_returns_invalid_request(self):
+        state = self.gh.read_state()
+        h0 = state["commits"][0]["hash"]
+        h2 = state["commits"][2]["hash"]
+
+        result = self.gh.rebase("squash", hashes=[h0, h2])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_request")
+        self.assertFalse(self.gh.read_state()["rebase_in_progress"])
+
+    def test_fixup_non_adjacent_commits_returns_invalid_request(self):
+        state = self.gh.read_state()
+        h0 = state["commits"][0]["hash"]
+        h2 = state["commits"][2]["hash"]
+
+        result = self.gh.rebase("fixup", hashes=[h0, h2])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_request")
+        self.assertFalse(self.gh.read_state()["rebase_in_progress"])
+
+    def test_squash_non_adjacent_does_not_modify_commit_history(self):
+        hashes_before = self.hashes()
+
+        self.gh.rebase("squash", hashes=[hashes_before[0], hashes_before[3]])
+
+        self.assertEqual(self.hashes(), hashes_before)
+
+    def test_squash_three_adjacent_commits_is_valid(self):
+        state = self.gh.read_state()
+        hashes = [state["commits"][i]["hash"] for i in range(3)]
+
+        result = self.gh.rebase("squash", hashes=hashes)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["commits"]), len(state["commits"]) - 2)
+
+
+# ---------------------------------------------------------------------------
 # Rebase: fixup
 # ---------------------------------------------------------------------------
 
@@ -333,22 +375,6 @@ class FixupTests(StandardRepoTest):
         result = self.gh.rebase("fixup", hashes=[h])
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "invalid_request")
-
-    def test_fixup_oldest_visible_extends_base(self):
-        # When `start` excludes the oldest commit, the oldest visible commit
-        # has a parent in the repo. Fixup should silently extend the rebase
-        # base by one commit and succeed.
-        state = self.gh.read_state()
-        # Use the 5th-oldest commit as `start`, so the visible window starts
-        # one above it.
-        new_start = state["commits"][-5]["hash"]
-        gh = GitHistory(str(self.repo), start=new_start)
-
-        sub_state = gh.read_state()
-        oldest_visible = sub_state["commits"][-1]
-        result = gh.rebase("fixup", hashes=[oldest_visible["hash"]])
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(result["commits"]), len(sub_state["commits"]) - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +642,169 @@ class BranchHistoryRebaseCollapsingTests(StandardRepoTest):
         # the branch history under their original "commit:" labels.
         commit_labels = [e["label"] for e in result["branch_history"] if e["label"].startswith("commit")]
         self.assertGreaterEqual(len(commit_labels), commit_count_before)
+
+
+class LoggingTests(StandardRepoTest):
+
+    def setUp(self):
+        super().setUp()
+        import git_history as _gh_module
+        self._log_path_orig = _gh_module._LOG_PATH
+        self._log_file = self.tmpdir / "test.log"
+        _gh_module._LOG_PATH = self._log_file
+
+    def tearDown(self):
+        import git_history as _gh_module
+        _gh_module._LOG_PATH = self._log_path_orig
+        super().tearDown()
+
+    def _log_lines(self):
+        if not self._log_file.exists():
+            return []
+        return [l for l in self._log_file.read_text().splitlines() if l]
+
+    def test_rebase_appends_log_entry(self):
+        h = self.hashes()[0]
+        self.gh.rebase("reword", hashes=[h], new_message="New message")
+        lines = self._log_lines()
+        self.assertEqual(len(lines), 1)
+        ts, branch, hash_ = lines[0].split()
+        self.assertEqual(branch, "main")
+        self.assertEqual(len(hash_), 40)
+
+    def test_reset_appends_log_entry(self):
+        hashes = self.hashes()
+        self.gh.reset(hashes[1])
+        lines = self._log_lines()
+        self.assertEqual(len(lines), 1)
+        ts, branch, hash_ = lines[0].split()
+        self.assertEqual(hash_, hashes[1])
+
+    def test_multiple_operations_append_multiple_lines(self):
+        hashes = self.hashes()
+        self.gh.reset(hashes[1])
+        self.gh.reset(hashes[0])
+        self.assertEqual(len(self._log_lines()), 2)
+
+    def test_failed_operation_does_not_append_log_entry(self):
+        self.gh.reset("0" * 40)
+        self.assertEqual(self._log_lines(), [])
+
+    def test_log_entry_format(self):
+        h = self.hashes()[0]
+        self.gh.rebase("reword", hashes=[h], new_message="Test")
+        line = self._log_lines()[0]
+        parts = line.split()
+        self.assertEqual(len(parts), 3)
+        # timestamp is ISO 8601
+        import datetime
+        datetime.datetime.fromisoformat(parts[0])
+
+
+# ---------------------------------------------------------------------------
+# Switch branch
+# ---------------------------------------------------------------------------
+
+class SwitchBranchTests(StandardRepoTest):
+
+    def setUp(self):
+        super().setUp()
+        subprocess.run(
+            ["git", "branch", "feature"],
+            cwd=str(self.repo), check=True, capture_output=True,
+        )
+
+    def test_state_includes_branches_list(self):
+        state = self.gh.read_state()
+        self.assertIn("branches", state)
+        self.assertIn("main", state["branches"])
+
+    def test_branches_list_includes_all_local_branches(self):
+        state = self.gh.read_state()
+        self.assertIn("feature", state["branches"])
+
+    def test_switch_to_existing_branch(self):
+        result = self.gh.switch_branch("feature")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["branch"], "feature")
+
+    def test_switch_returns_full_state(self):
+        result = self.gh.switch_branch("feature")
+        self.assertIn("commits", result)
+        self.assertIn("branch_history", result)
+        self.assertIn("branches", result)
+
+    def test_switch_to_unknown_branch_returns_error(self):
+        result = self.gh.switch_branch("nonexistent")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_branch")
+
+    def test_switch_empty_branch_returns_error(self):
+        result = self.gh.switch_branch("")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "invalid_branch")
+
+    def test_switch_when_dirty_is_refused(self):
+        self.make_dirty()
+        result = self.gh.switch_branch("feature")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "dirty_tree")
+
+    def test_switch_during_rebase_is_refused(self):
+        conflict_dir = self.tmpdir / "conflict"
+        conflict_dir.mkdir()
+        conflict_repo = _build_conflict_repo(conflict_dir)
+        subprocess.run(
+            ["git", "branch", "other"],
+            cwd=str(conflict_repo), check=True, capture_output=True,
+        )
+        gh = GitHistory(str(conflict_repo))
+        state = gh.read_state()
+        order = [c["hash"] for c in state["commits"]]
+        order[0], order[1] = order[1], order[0]
+        gh.rebase("move", order=order)
+        result = gh.switch_branch("other")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rebase_in_progress")
+
+    def test_stash_during_rebase_is_refused(self):
+        conflict_dir = self.tmpdir / "conflict"
+        conflict_dir.mkdir()
+        conflict_repo = _build_conflict_repo(conflict_dir)
+        gh = GitHistory(str(conflict_repo))
+        state = gh.read_state()
+        order = [c["hash"] for c in state["commits"]]
+        order[0], order[1] = order[1], order[0]
+        gh.rebase("move", order=order)
+        result = gh.stash()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rebase_in_progress")
+
+    def test_stash_pop_during_rebase_is_refused(self):
+        conflict_dir = self.tmpdir / "conflict"
+        conflict_dir.mkdir()
+        conflict_repo = _build_conflict_repo(conflict_dir)
+        gh = GitHistory(str(conflict_repo))
+        state = gh.read_state()
+        order = [c["hash"] for c in state["commits"]]
+        order[0], order[1] = order[1], order[0]
+        gh.rebase("move", order=order)
+        result = gh.stash_pop()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rebase_in_progress")
+
+    def test_reset_during_rebase_is_refused(self):
+        conflict_dir = self.tmpdir / "conflict"
+        conflict_dir.mkdir()
+        conflict_repo = _build_conflict_repo(conflict_dir)
+        gh = GitHistory(str(conflict_repo))
+        state = gh.read_state()
+        order = [c["hash"] for c in state["commits"]]
+        order[0], order[1] = order[1], order[0]
+        gh.rebase("move", order=order)
+        result = gh.reset(state["commits"][0]["hash"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rebase_in_progress")
 
 
 if __name__ == "__main__":

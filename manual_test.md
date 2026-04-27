@@ -6,15 +6,15 @@ Run these checks before each release.
 
 ## 1. CLI startup
 
-Use the test repo created by `python make_test_repo.py /tmp/test-repo`.
+Use the test repo created by `python make_test_repo.py test-repo` (run from the git-history folder).
 
 | # | Step | Expected |
 |---|------|----------|
-| 1 | `cd /tmp/test-repo && python git_history.py` | Browser opens at `http://127.0.0.1:<port>/` with `?t=<token>` in the URL |
+| 1 | `cd test-repo` then `python ..\git_history.py` | Browser opens at `http://127.0.0.1:<port>/` with `?t=<token>` in the URL |
 | 2 | Wait for page to load, then inspect the address bar | Token is gone — URL is just `/` |
 | 3 | Reload the page (no `?t=` in URL) | App still works (token persisted in localStorage) |
-| 4 | `python git_history.py --port 9876` | Server binds to port 9876 |
-| 5 | `python git_history.py HEAD~5` | Only 5 commits visible |
+| 4 | `python ..\git_history.py --port 9876` | Server binds to port 9876 |
+| 5 | `python ..\git_history.py HEAD~5` | Only 5 commits visible |
 
 ---
 
@@ -33,14 +33,35 @@ Drag-and-drop and conflict abort are covered by automated tests.
 
 | # | Step | Expected |
 |---|------|----------|
-| 1 | With the app open, switch to another window and make a commit in the terminal (`git commit --allow-empty -m "test"`) | *(nothing yet)* |
-| 2 | Click back on the browser window | Commit list refreshes automatically and shows the new commit |
+| 1 | With the app open, switch to another window and make a commit in the terminal (`git commit --allow-empty -m "test"`) Click back on the browser window  | Commit list refreshes automatically and shows the new commit |
 
 ---
 
-## Suggested automated test additions
+---
 
-- **`--port` flag**: verify server binds to the specified port (testable in `test_cli.py` without a browser).
-- **`HEAD~5` argument**: start the server with a revision limit and assert the API returns only that many commits.
-- **Conflict continue**: after triggering a conflict, resolve the file programmatically and click Continue — currently untested in `test_ui.py`.
-- **Window focus refresh**: dispatch a `visibilitychange` event via `page.evaluate` in Playwright and assert the commit list updates.
+## 4. Branch switching
+
+| # | Step | Expected |
+|---|------|----------|
+| 1 | With a repo that has multiple local branches, open the app | Branch dropdown shows current branch, all local branches listed |
+| 2 | Select a different branch from the dropdown | Commit list and branch history update to the new branch; toolbar shows new branch name |
+| 3 | Make a change without committing, then try to switch branches via the dropdown | Switch branch is not permitted |
+
+---
+
+## 5. Submodule guard
+
+| # | Step | Expected |
+|---|------|----------|
+| 1 | In a repo with a submodule, find a commit that modifies `.gitmodules`, then drag it to a different position | Operation refused with an error message |
+| 2 | Reset (double-click in branch history) to an entry where submodule commit pointers differ but `.gitmodules` is unchanged | Reset succeeds; user is prompted to "Update submodules"|
+
+---
+
+## 6. `--clear-log`
+
+| # | Step | Expected |
+|---|------|----------|
+| 1 | `python git_history.py --clear-log` (after some operations have been logged) | Prints `Deleted <log path>` and exits |
+| 2 | `python git_history.py --clear-log` (no log file present) | Prints `No log file at <log path>` and exits |
+

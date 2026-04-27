@@ -5,6 +5,7 @@ The GitHistory class wraps a git repository and exposes JSON-serializable
 operations. The create_app() factory builds a Flask app that delegates each
 /api/* endpoint to a GitHistory instance.
 """
+import datetime
 import hmac
 import logging
 import os
@@ -14,14 +15,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+_LOG_PATH = Path.home() / ".git-history.log"
 
-_EDITOR_PY = str(Path(__file__).resolve().parent.parent / "editor.py")
+
+_EDITOR_PY = str(Path(__file__).parent / "editor.py")
 
 
 class GitHistory:
-    def __init__(self, repo_path, start="HEAD~200"):
+    def __init__(self, repo_path):
         self.repo = Path(repo_path)
-        self._start = self._resolve_commit(start)
+        self._start = self._resolve_commit("HEAD~200")
 
     # ------------------------------------------------------------------
     # low-level helpers
@@ -32,6 +35,9 @@ class GitHistory:
             args, cwd=str(self.repo), env=env,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
+
+    def _git_err(self, r):
+        return {"ok": False, "error": "git_failed", "message": r.stderr.strip()}
 
     def _resolve_commit(self, ref):
         if ref is None:
@@ -45,6 +51,10 @@ class GitHistory:
         r = self._run(["git", "symbolic-ref", "--short", "HEAD"])
         return r.stdout.strip() if r.returncode == 0 else ""
 
+    def _list_local_branches(self):
+        r = self._run(["git", "branch", "--format=%(refname:short)"])
+        return [b.strip() for b in r.stdout.splitlines() if b.strip()]
+
     def _is_dirty(self):
         r = self._run(["git", "status", "--porcelain", "--untracked-files=no"])
         return bool(r.stdout.strip())
@@ -53,14 +63,52 @@ class GitHistory:
         r = self._run(["git", "stash", "list"])
         return bool(r.stdout.strip())
 
+    def _append_log(self):
+        branch = self._current_branch()
+        head = self._resolve_commit("HEAD")
+        if branch and head:
+            ts = datetime.datetime.now().isoformat(timespec="seconds")
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(f"{ts} {branch} {head}\n")
+
     def _in_rebase(self):
-        git_dir = self.repo / ".git"
+        r = self._run(["git", "rev-parse", "--git-dir"])
+        if r.returncode != 0:
+            return False
+        git_dir = Path(r.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (self.repo / git_dir).resolve()
         return (git_dir / "rebase-merge").exists() or \
                (git_dir / "rebase-apply").exists()
 
     def _conflict_files(self):
         r = self._run(["git", "diff", "--name-only", "--diff-filter=U"])
         return [ln for ln in r.stdout.splitlines() if ln]
+
+    def _get_gitmodules(self, hash):
+        r = self._run(["git", "show", f"{hash}:.gitmodules"])
+        return r.stdout if r.returncode == 0 else ""
+
+    def _gitlinks_at(self, hash):
+        r = self._run(["git", "ls-tree", "-r", hash])
+        result = {}
+        for line in r.stdout.splitlines():
+            if not line.startswith("160000 "):
+                continue
+            tab = line.find("\t")
+            if tab != -1:
+                parts = line[:tab].split()
+                if len(parts) >= 3:
+                    result[line[tab + 1:]] = parts[2]
+        return result
+
+    def _commit_touches_gitmodules(self, hash):
+        r = self._run(["git", "diff-tree", "--no-commit-id", "-r", "--name-only", hash])
+        return ".gitmodules" in r.stdout.splitlines()
+
+    def _any_moved_commit_touches_gitmodules(self, current_order, new_order):
+        moved = [h for h, h2 in zip(current_order, new_order) if h != h2]
+        return any(self._commit_touches_gitmodules(h) for h in moved)
 
     def _conflict_response(self):
         return {
@@ -78,6 +126,7 @@ class GitHistory:
         return {
             "ok": True,
             "branch": self._current_branch(),
+            "branches": self._list_local_branches(),
             "dirty": self._is_dirty(),
             "has_stash": self._has_stash(),
             "rebase_in_progress": self._in_rebase(),
@@ -86,8 +135,6 @@ class GitHistory:
             "branch_history": self._list_branch_history(),
         }
 
-    def refresh(self):
-        return self.read_state()
 
     def _list_commits(self):
         fmt = "%H%x1f%h%x1f%an%x1f%ai%x1f%B%x1f%D%x00"
@@ -172,8 +219,13 @@ class GitHistory:
         # This ensures reset/rebase intermediates are discarded in favour of the
         # original commit label, keeping the displayed list stable after undo/redo.
         filtered = list(self._filter_rebase_groups(raw))
-        last_idx = {e["hash"]: i for i, e in enumerate(filtered)}
-        entries = [e for i, e in enumerate(filtered) if last_idx[e["hash"]] == i]
+        seen = set()
+        entries = []
+        for e in reversed(filtered):
+            if e["hash"] not in seen:
+                seen.add(e["hash"])
+                entries.append(e)
+        entries.reverse()
         return entries
 
     # ------------------------------------------------------------------
@@ -181,21 +233,25 @@ class GitHistory:
     # ------------------------------------------------------------------
 
     def stash(self):
+        if self._in_rebase():
+            return {"ok": False, "error": "rebase_in_progress"}
         if not self._is_dirty():
             return {"ok": False, "error": "nothing_to_stash"}
         r = self._run(["git", "stash", "push"])
         if r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(r)
         return self.read_state()
 
     def stash_pop(self):
+        if self._in_rebase():
+            return {"ok": False, "error": "rebase_in_progress"}
         if not self._has_stash():
             return {"ok": False, "error": "no_stash"}
         if self._is_dirty():
             return {"ok": False, "error": "dirty_tree"}
         r = self._run(["git", "stash", "pop"])
         if r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(r)
         return self.read_state()
 
     # ------------------------------------------------------------------
@@ -203,12 +259,49 @@ class GitHistory:
     # ------------------------------------------------------------------
 
     def reset(self, hash):
+        if self._in_rebase():
+            return {"ok": False, "error": "rebase_in_progress"}
+        resolved_hash = self._resolve_commit(hash)
+        if resolved_hash is None:
+            return {"ok": False, "error": "invalid_commit"}
+        head_hash = self._resolve_commit("HEAD")
+        if head_hash and self._get_gitmodules(head_hash) != self._get_gitmodules(resolved_hash):
+            return {"ok": False, "error": "gitmodules_differ"}
         if self._is_dirty():
             return {"ok": False, "error": "dirty_tree"}
-        r = self._run(["git", "reset", "--hard", hash])
+        before_links = self._gitlinks_at(head_hash) if head_hash else {}
+        r = self._run(["git", "reset", "--hard", resolved_hash])
         if r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(r)
+        self._append_log()
+        after_links = self._gitlinks_at(resolved_hash)
+        state = self.read_state()
+        if before_links != after_links:
+            state["submodule_update_suggested"] = True
+        return state
+
+    def submodule_update(self):
+        r = self._run(["git", "submodule", "update", "--init"])
+        if r.returncode != 0:
+            return self._git_err(r)
         return self.read_state()
+
+    def switch_branch(self, branch):
+        if self._in_rebase():
+            return {"ok": False, "error": "rebase_in_progress"}
+        if self._is_dirty():
+            return {"ok": False, "error": "dirty_tree"}
+        if branch not in self._list_local_branches():
+            return {"ok": False, "error": "invalid_branch"}
+        before_links = self._gitlinks_at(self._resolve_commit("HEAD"))
+        r = self._run(["git", "switch", branch])
+        if r.returncode != 0:
+            return self._git_err(r)
+        self._start = self._resolve_commit("HEAD~200")
+        state = self.read_state()
+        if self._gitlinks_at(self._resolve_commit("HEAD")) != before_links:
+            state["submodule_update_suggested"] = True
+        return state
 
     # ------------------------------------------------------------------
     # show
@@ -218,7 +311,7 @@ class GitHistory:
         fmt = "%H%x00%h%x00%an%x00%ai%x00%s%x00%D"
         log_r = self._run(["git", "log", "--abbrev=7", f"--format={fmt}", "-1", hash])
         if log_r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(log_r)
         parts = log_r.stdout.split("\x00")
         if len(parts) < 6:
             return {"ok": False, "error": "git_failed"}
@@ -235,7 +328,7 @@ class GitHistory:
         }
         diff_r = self._run(["git", "show", "--format=", hash])
         if diff_r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(diff_r)
         info = f"{commit['short_hash']} {commit['message']}"
         return {"ok": True, "commit": commit, "info": info, "diff": diff_r.stdout}
 
@@ -259,10 +352,16 @@ class GitHistory:
                 return {"ok": False, "error": "invalid_request"}
             if order == visible:
                 return self.read_state()
+            if self._any_moved_commit_touches_gitmodules(visible, order):
+                return {"ok": False, "error": "gitmodules_in_range"}
             todo_hashes = list(reversed(order))
             mark = {}
         elif operation in ("squash", "fixup"):
             if not hashes or any(h not in visible for h in hashes):
+                return {"ok": False, "error": "invalid_request"}
+            # Validate that hashes are consecutive (adjacent) in the visible history.
+            indices = sorted(visible.index(h) for h in hashes)
+            if indices != list(range(indices[0], indices[-1] + 1)):
                 return {"ok": False, "error": "invalid_request"}
             todo_hashes = list(reversed(visible))
             if len(hashes) == 1:
@@ -331,20 +430,15 @@ class GitHistory:
                         pass
 
         if r.returncode != 0 and not self._in_rebase():
-            return {"ok": False, "error": "git_failed"}
+            return self._git_err(r)
 
         # Squashing commits whose combined diff is empty (e.g. a file that is
         # created then deleted) leaves git paused mid-rebase despite
         # --empty=keep. One --continue drives it to completion.
         if self._in_rebase():
-            if self._conflict_files():
-                return self._conflict_response()
-            ce = os.environ.copy()
-            ce["GIT_EDITOR"] = "true"
-            ce["GIT_SEQUENCE_EDITOR"] = "true"
-            self._run(["git", "rebase", "--continue"], env=ce)
-            if self._in_rebase():
-                return self._conflict_response()
+            err = self._drive_continue()
+            if err is not None:
+                return err
 
         if extend and self._start is not None:
             # Old _start and the oldest visible commit were folded together;
@@ -356,33 +450,50 @@ class GitHistory:
                 return {"ok": False, "error": "start_update_failed"}
             self._start = new_start
 
-        return self.read_state()
+        self._append_log()
+        before_links = self._gitlinks_at(visible[0])
+        after_links = self._gitlinks_at(self._resolve_commit("HEAD"))
+        state = self.read_state()
+        if before_links != after_links:
+            state["submodule_update_suggested"] = True
+        return state
 
     def rebase_continue(self):
         if not self._in_rebase():
             return {"ok": False, "error": "invalid_request"}
-        if self._conflict_files():
-            return self._conflict_response()
-        env = os.environ.copy()
-        env["GIT_EDITOR"] = "true"
-        env["GIT_SEQUENCE_EDITOR"] = "true"
-        r = self._run(["git", "rebase", "--continue"], env=env)
-        if self._in_rebase():
-            return self._conflict_response()
-        if r.returncode != 0:
-            return {"ok": False, "error": "git_failed"}
-        return self.read_state()
+        err = self._drive_continue()
+        if err is not None:
+            return err
+        self._append_log()
+        orig_head = self._resolve_commit("ORIG_HEAD")
+        before_links = self._gitlinks_at(orig_head) if orig_head else {}
+        after_links = self._gitlinks_at(self._resolve_commit("HEAD"))
+        state = self.read_state()
+        if before_links != after_links:
+            state["submodule_update_suggested"] = True
+        return state
 
     def rebase_abort(self):
         if self._in_rebase():
             r = self._run(["git", "rebase", "--abort"])
             if r.returncode != 0:
-                return {"ok": False, "error": "git_failed"}
+                return self._git_err(r)
         return self.read_state()
 
     # ------------------------------------------------------------------
     # rebase helpers
     # ------------------------------------------------------------------
+
+    def _drive_continue(self):
+        if self._conflict_files():
+            return self._conflict_response()
+        env = self._rebase_env()
+        r = self._run(["git", "rebase", "--continue"], env=env)
+        if self._in_rebase():
+            return self._conflict_response()
+        if r.returncode != 0:
+            return self._git_err(r)
+        return None
 
     def _rebase_env(self, todo_path=None, msg_path=None):
         env = os.environ.copy()
@@ -400,7 +511,7 @@ class GitHistory:
     @staticmethod
     def _write_tempfile(content):
         fd, path = tempfile.mkstemp(suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
         return path
 
@@ -436,10 +547,6 @@ def create_app(repo_path, token):
     def api_state():
         return jsonify(app.config["GH"].read_state())
 
-    @app.route("/api/refresh", methods=["POST"])
-    def api_refresh():
-        return jsonify(app.config["GH"].read_state())
-
     @app.route("/api/stash", methods=["POST"])
     def api_stash():
         return jsonify(app.config["GH"].stash())
@@ -473,9 +580,27 @@ def create_app(repo_path, token):
         body = request.get_json(silent=True) or {}
         return jsonify(app.config["GH"].reset(body.get("hash", "")))
 
+    @app.route("/api/submodule/update", methods=["POST"])
+    def api_submodule_update():
+        return jsonify(app.config["GH"].submodule_update())
+
+    @app.route("/api/switch", methods=["POST"])
+    def api_switch():
+        body = request.get_json(silent=True) or {}
+        return jsonify(app.config["GH"].switch_branch(body.get("branch", "")))
+
     @app.route("/api/show")
     def api_show():
         return jsonify(app.config["GH"].show(request.args.get("hash", "")))
+
+    @app.route("/log")
+    def log_view():
+        from flask import Response
+        try:
+            content = _LOG_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            content = ""
+        return Response(content, mimetype="text/plain")
 
     @app.route("/api/quit", methods=["POST"])
     def api_quit():
@@ -504,11 +629,30 @@ def main():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("start", nargs="?", default="HEAD~200",
-                        help="oldest commit to show (default: HEAD~200)")
     parser.add_argument("--port", type=int, default=0,
                         help="TCP port for the server (default: auto-assigned)")
+    parser.add_argument("--clear-log", action="store_true",
+                        help="delete the log file and exit")
     args = parser.parse_args()
+
+    if args.clear_log:
+        if _LOG_PATH.exists():
+            _LOG_PATH.unlink()
+            print(f"Deleted {_LOG_PATH}")
+        else:
+            print(f"No log file at {_LOG_PATH}")
+        sys.exit(0)
+
+    # Require git >= 2.26.
+    r = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    try:
+        parts = r.stdout.strip().split()  # "git version X.Y.Z"
+        version_parts = parts[2].split(".")
+        major, minor = int(version_parts[0]), int(version_parts[1])
+        assert  (major, minor) >= (2, 26)
+    except:
+        print(f"fatal: git >= 2.26 required", file=sys.stderr) # Git not found, unknown version or version too old.
+        sys.exit(1)
 
     # Must be inside a git repo.
     r = subprocess.run(["git", "rev-parse", "--git-dir"],
@@ -536,8 +680,6 @@ def main():
     repo_path = os.getcwd()
 
     app = create_app(repo_path, token)
-    # Override the default start if the user passed one.
-    app.config["GH"] = GitHistory(repo_path, start=args.start)
 
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     import flask.cli
@@ -546,7 +688,7 @@ def main():
     url = f"http://127.0.0.1:{port}/?t={token}"
     print(f"git-history running at {url}  —  Ctrl+C to quit")
     webbrowser.open(url)
-    app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+    app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False, threaded=False)
 
 
 if __name__ == "__main__":

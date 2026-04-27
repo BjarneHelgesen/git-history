@@ -2,23 +2,28 @@
 """
 Create a fresh git repo populated with commits suitable for testing git-history.
 
+Also creates a companion library repo (<name>-lib) used as a git submodule.
+
 The repo represents building a simple todo web-app. Each commit touches a
 unique file path so every rebase operation (move, squash, fixup, reword)
 succeeds without merge conflicts in automated tests.
 
 The commits are intentionally arranged to give manual testers clear targets:
 
-  UI row  6  "fixup! Addd authentication form"        → practise Fixup (↵)
-  UI row  7  "Addd authentication form"               → practise Reword
-  UI rows 8–12  "Step N/5" commits, deliberately      → practise Drag-and-drop:
-               out of order (3, 5, 2, 4, 1)             drag into order 5→4→3→2→1
+  UI row  3  "Advance lib/ submodule pointer v1.0→v1.1" → pointer-only; no guard
+  UI row  8  "fixup! Addd authentication form"        → practise Fixup (↵)
+  UI row  9  "Addd authentication form"               → practise Reword
+  UI rows 10–14  "Step N/5" commits, deliberately     → practise Drag-and-drop:
+                 out of order (3, 5, 2, 4, 1)           drag into order 5→4→3→2→1
+  UI row 16  "Add branch tracking for lib/ submodule"  → .gitmodules edit (guard fires)
+  UI row 17  "Wire in shared-utils as a git submodule" → submodule add (guard fires)
 
 Usage:
     python make_test_repo.py [path] [--force]
 
-Defaults to creating ./test-repo. Pass --force to delete and recreate it.
-The generated repo is fully deterministic (fixed authors, dates, content),
-so commit hashes are stable across runs and can be used in snapshot tests.
+Defaults to creating ./test-repo (and ./test-lib). Pass --force to delete and
+recreate them. The generated repos are fully deterministic (fixed authors,
+dates, content), so commit hashes are stable across runs.
 """
 import argparse
 import os
@@ -32,9 +37,11 @@ from pathlib import Path
 
 # Each entry: (message, author_key, [(relpath, content), ...], tag_or_None)
 #
+# Special file sentinels (handled in make_commit):
+#   ("__submodule_add__",    "path")  — clone lib repo as submodule at hash1
+#   ("__submodule_update__", "path")  — advance submodule pointer to hash2
+#
 # Commits are listed oldest → newest (bottom → top in the UI).
-# The step-numbered commits are deliberately out of creation order so that they
-# appear scrambled in the UI and give the tester a concrete drag-and-drop goal.
 COMMITS = [
     # ── foundation ───────────────────────────────────────────────────────────
     ("Initial commit",
@@ -84,6 +91,18 @@ COMMITS = [
       ("src/middleware/session.py",
        "def require_session(request):\n"
        "    return request.cookies.get('session_id')\n")],
+     None),
+
+    # ── submodule: pin to v1.0 of the shared library ─────────────────────────
+    ("Wire in shared-utils as a git submodule (lib/ pinned at v1.0 — utils only)",
+     "alice",
+     [("__submodule_add__", "lib")],
+     None),
+
+    # ── .gitmodules edit: adds branch tracking; moving this commit is blocked ─
+    ("Add branch tracking for lib/ submodule",
+     "carol",
+     [("__gitmodules_edit__", "lib")],
      None),
 
     ("Add integration tests",
@@ -167,6 +186,12 @@ COMMITS = [
        "def server_error():\n    return '<h1>500 Internal Error</h1>', 500\n")],
      None),
 
+    # ── submodule: advance to v1.1 of the shared library ─────────────────────
+    ("Advance lib/ submodule pointer v1.0 → v1.1 (picks up date-formatting helpers)",
+     "bob",
+     [("__submodule_update__", "lib")],
+     None),
+
     ("Add Makefile",
      "carol",
      [("Makefile",
@@ -211,13 +236,58 @@ def run(cmd, cwd, env=None):
     return result
 
 
+def _git_env(author_name, author_email, when):
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"]     = author_name
+    env["GIT_AUTHOR_EMAIL"]    = author_email
+    env["GIT_AUTHOR_DATE"]     = when
+    env["GIT_COMMITTER_NAME"]  = author_name
+    env["GIT_COMMITTER_EMAIL"] = author_email
+    env["GIT_COMMITTER_DATE"]  = when
+    return env
+
+
+def _init(repo):
+    run(["git", "init", "-b", "main"],                   repo)
+    run(["git", "config", "user.email",       "test@example.com"], repo)
+    run(["git", "config", "user.name",        "Test User"],        repo)
+    run(["git", "config", "commit.gpgsign",   "false"],            repo)
+    run(["git", "config", "core.autocrlf",    "false"],            repo)
+    run(["git", "config", "core.fileMode",    "false"],            repo)
+
+
 def init_repo(repo):
-    run(["git", "init", "-b", "main"], repo)
-    run(["git", "config", "user.email", "test@example.com"], repo)
-    run(["git", "config", "user.name",  "Test User"],         repo)
-    run(["git", "config", "commit.gpgsign",  "false"],        repo)
-    run(["git", "config", "core.autocrlf",   "false"],        repo)
-    run(["git", "config", "core.fileMode",   "false"],        repo)
+    _init(repo)
+    # Allow local (file://) submodule URLs.
+    run(["git", "config", "protocol.file.allow", "always"], repo)
+
+
+def create_lib_repo(lib):
+    """Create a two-commit library repo; return (hash1, hash2)."""
+    lib.mkdir(parents=True)
+    _init(lib)
+
+    def _commit(relpath, content, msg, author_key, day_offset):
+        full = lib / relpath
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_bytes(content.encode("utf-8"))
+        run(["git", "add", "--", relpath], lib)
+        name, email = AUTHORS[author_key]
+        when = (BASE_DATE + timedelta(days=day_offset)).isoformat()
+        run(["git", "commit", "-m", msg], lib, env=_git_env(name, email, when))
+        return run(["git", "rev-parse", "HEAD"], lib).stdout.strip()
+
+    hash1 = _commit(
+        "utils.py",
+        "def greet(name):\n    return f'Hello, {name}'\n",
+        "Initial: add utils", "alice", 0,
+    )
+    hash2 = _commit(
+        "helpers.py",
+        "def format_date(d):\n    return d.strftime('%Y-%m-%d')\n",
+        "Add date helpers", "bob", 2,
+    )
+    return hash1, hash2
 
 
 def write_file(repo, relpath, content):
@@ -227,25 +297,43 @@ def write_file(repo, relpath, content):
     full.write_bytes(content.encode("utf-8"))
 
 
-def make_commit(repo, index, message, author_key, files, tag):
+def make_commit(repo, index, message, author_key, files, tag, *, sub):
     for relpath, content in files:
-        write_file(repo, relpath, content)
-        run(["git", "add", "--", relpath], repo)
+        if relpath == "__submodule_add__":
+            path = content.strip()
+            run(["git", "-c", "protocol.file.allow=always",
+                 "submodule", "add", sub["url"], path], repo)
+            # git submodule add checks out HEAD (hash2); pin to hash1 instead.
+            run(["git", "checkout", sub["hash1"]], repo / path)
+            run(["git", "add", "--", path], repo)
+        elif relpath == "__submodule_update__":
+            path = content.strip()
+            run(["git", "checkout", sub["hash2"]], repo / path)
+            run(["git", "add", "--", path], repo)
+        elif relpath == "__gitmodules_edit__":
+            gitmodules = repo / ".gitmodules"
+            text = gitmodules.read_text(encoding="utf-8")
+            gitmodules.write_text(text + "\tbranch = main\n", encoding="utf-8")
+            run(["git", "add", "--", ".gitmodules"], repo)
+        else:
+            write_file(repo, relpath, content)
+            run(["git", "add", "--", relpath], repo)
 
     author_name, author_email = AUTHORS[author_key]
     when = (BASE_DATE + timedelta(days=index * DAYS_BETWEEN_COMMITS)).isoformat()
-
-    env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"]     = author_name
-    env["GIT_AUTHOR_EMAIL"]    = author_email
-    env["GIT_AUTHOR_DATE"]     = when
-    env["GIT_COMMITTER_NAME"]  = author_name
-    env["GIT_COMMITTER_EMAIL"] = author_email
-    env["GIT_COMMITTER_DATE"]  = when
-
-    run(["git", "commit", "-m", message], repo, env=env)
+    run(["git", "commit", "-m", message], repo,
+        env=_git_env(author_name, author_email, when))
     if tag:
         run(["git", "tag", tag], repo)
+
+
+def _remove(path):
+    for p in path.rglob("*"):
+        try:
+            p.chmod(p.stat().st_mode | stat.S_IWRITE)
+        except OSError:
+            pass
+    shutil.rmtree(path)
 
 
 def main():
@@ -256,29 +344,31 @@ def main():
         help="Directory to create the repo in (default: test-repo)")
     parser.add_argument(
         "--force", action="store_true",
-        help="Delete the target directory if it already exists")
+        help="Delete the target directories if they already exist")
     args = parser.parse_args()
 
     repo = Path(args.path).resolve()
-    if repo.exists():
-        if not args.force:
-            sys.stderr.write(
-                f"refusing to overwrite existing path: {repo}\n"
-                "pass --force to delete and recreate it\n")
-            sys.exit(1)
-        for p in repo.rglob("*"):
-            try:
-                p.chmod(p.stat().st_mode | stat.S_IWRITE)
-            except OSError:
-                pass
-        shutil.rmtree(repo)
-    repo.mkdir(parents=True)
+    lib  = repo.parent / (repo.name + "-lib")
 
+    for target in (repo, lib):
+        if target.exists():
+            if not args.force:
+                sys.stderr.write(
+                    f"refusing to overwrite existing path: {target}\n"
+                    "pass --force to delete and recreate it\n")
+                sys.exit(1)
+            _remove(target)
+
+    lib_hash1, lib_hash2 = create_lib_repo(lib)
+    sub = {"url": str(lib), "hash1": lib_hash1, "hash2": lib_hash2}
+
+    repo.mkdir(parents=True)
     init_repo(repo)
     for i, (message, author_key, files, tag) in enumerate(COMMITS):
-        make_commit(repo, i, message, author_key, files, tag)
+        make_commit(repo, i, message, author_key, files, tag, sub=sub)
 
     print(f"Created repo at {repo} with {len(COMMITS)} commits.")
+    print(f"Library repo at {lib}.")
 
 
 if __name__ == "__main__":

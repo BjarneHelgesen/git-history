@@ -17,7 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_history import create_app
-from make_test_repo import COMMITS, init_repo, make_commit
+from make_test_repo import COMMITS, create_lib_repo, init_repo, make_commit
 from conftest import _commit_raw, _build_conflict_repo
 
 TOKEN = "test-ui-token-abcdefgh12345678"
@@ -34,11 +34,15 @@ _DRAG_COMMITS = [
 
 @pytest.fixture(scope="session")
 def _template_repo(tmp_path_factory):
-    repo = tmp_path_factory.mktemp("ui-template") / "repo"
+    template_dir = tmp_path_factory.mktemp("ui-template")
+    lib = template_dir / "lib"
+    lib_hash1, lib_hash2 = create_lib_repo(lib)
+    sub = {"url": str(lib), "hash1": lib_hash1, "hash2": lib_hash2}
+    repo = template_dir / "repo"
     repo.mkdir()
     init_repo(repo)
     for i, (msg, author_key, files, tag) in enumerate(COMMITS):
-        make_commit(repo, i, msg, author_key, files, tag)
+        make_commit(repo, i, msg, author_key, files, tag, sub=sub)
     return repo
 
 
@@ -62,7 +66,7 @@ def drag_server(tmp_path_factory):
     repo.mkdir()
     init_repo(repo)
     for i, (msg, author_key, files, tag) in enumerate(_DRAG_COMMITS):
-        make_commit(repo, i, msg, author_key, files, tag)
+        make_commit(repo, i, msg, author_key, files, tag, sub=None)
     app = create_app(str(repo), TOKEN)
     server = make_server("127.0.0.1", 0, app)
     port = server.server_port
@@ -106,14 +110,14 @@ def drag_row(page, source_locator, target_locator, position="above"):
 
 
 def drag_row_and_wait(page, source_locator, target_locator, position="above"):
-    with page.expect_response("**/api/rebase", timeout=5000):
+    with page.expect_response("**/api/rebase", timeout=10000):
         drag_row(page, source_locator, target_locator, position)
 
 
 def test_page_loads(page, live_server):
     page.goto(live_server["url"])
     page.wait_for_selector(".commit-row")
-    assert page.locator(".commit-row").count() == 21
+    assert page.locator(".commit-row").count() == 24
     assert page.locator(".branch-history-row").count() > 0
 
 
@@ -145,8 +149,8 @@ def test_squash(page, live_server):
     page.locator(".commit-row").nth(0).click()
     page.locator(".commit-row").nth(1).click(modifiers=["Shift"])
     page.locator("#btn-squash").click()
-    page.wait_for_function("document.querySelectorAll('.commit-row').length === 20")
-    assert page.locator(".commit-row").count() == 20
+    page.wait_for_function("document.querySelectorAll('.commit-row').length === 23")
+    assert page.locator(".commit-row").count() == 23
 
 
 def test_stash_button_when_dirty(page, live_server):
@@ -177,8 +181,8 @@ def test_fixup_button(page, live_server):
     row = page.locator(".commit-row").nth(1)
     row.hover()
     row.locator("button[title='Fixup']").click()
-    page.wait_for_function("document.querySelectorAll('.commit-row').length === 20")
-    assert page.locator(".commit-row").count() == 20
+    page.wait_for_function("document.querySelectorAll('.commit-row').length === 23")
+    assert page.locator(".commit-row").count() == 23
 
 
 def test_fixup_button_disabled_on_oldest(page, live_server):

@@ -6,3 +6,6 @@ build/
 dist/
 *.egg-info/
 test-repo/
+test-repo-lib/
+/.vs
+.claude/

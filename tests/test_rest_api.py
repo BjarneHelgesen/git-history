@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from make_test_repo import COMMITS, init_repo, make_commit
+from make_test_repo import COMMITS, create_lib_repo, init_repo, make_commit
 from conftest import _commit_raw, _build_conflict_repo
 from git_history import create_app
 
@@ -57,11 +57,14 @@ def _build_template_repo() -> Path:
     if _TEMPLATE_REPO is not None:
         return _TEMPLATE_REPO
     template_dir = Path(tempfile.mkdtemp(prefix="git-history-api-template-"))
+    lib = template_dir / "lib"
+    lib_hash1, lib_hash2 = create_lib_repo(lib)
+    sub = {"url": str(lib), "hash1": lib_hash1, "hash2": lib_hash2}
     repo = template_dir / "repo"
     repo.mkdir()
     init_repo(repo)
     for i, (msg, author_key, files, tag) in enumerate(COMMITS):
-        make_commit(repo, i, msg, author_key, files, tag)
+        make_commit(repo, i, msg, author_key, files, tag, sub=sub)
     atexit.register(lambda: shutil.rmtree(template_dir, ignore_errors=True))
     _TEMPLATE_REPO = repo
     return repo
@@ -157,25 +160,6 @@ class StateEndpointTests(StandardAPITest):
         data = self.get("/api/state").get_json()
         self.assertEqual(data["commits"][0]["message"], "Add CI workflow")
         self.assertEqual(data["commits"][-1]["message"], "Initial commit")
-
-
-# ---------------------------------------------------------------------------
-# POST /api/refresh
-# ---------------------------------------------------------------------------
-
-class RefreshEndpointTests(StandardAPITest):
-
-    def test_refresh_returns_same_shape_as_state(self):
-        state = self.get("/api/state").get_json()
-        refresh = self.post("/api/refresh").get_json()
-        self.assertEqual(set(refresh.keys()), set(state.keys()))
-        self.assertEqual(refresh["commits"][0]["hash"],
-                         state["commits"][0]["hash"])
-
-    def test_refresh_uses_post(self):
-        resp = self.get("/api/refresh")
-        # GET on a POST-only endpoint should be 405 Method Not Allowed.
-        self.assertEqual(resp.status_code, 405)
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +541,117 @@ class ManualPageTests(StandardAPITest):
     def test_manual_requires_no_token(self):
         resp = self.client.get("/manual")
         self.assertEqual(resp.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/rebase — consecutive commit validation
+# ---------------------------------------------------------------------------
+
+class RebaseConsecutiveEndpointTests(StandardAPITest):
+
+    def test_squash_non_adjacent_commits_returns_invalid_request(self):
+        state = self.get("/api/state").get_json()
+        h0 = state["commits"][0]["hash"]
+        h2 = state["commits"][2]["hash"]
+
+        data = self.post("/api/rebase", json={
+            "operation": "squash",
+            "hashes": [h0, h2],
+        }).get_json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["error"], "invalid_request")
+
+    def test_fixup_non_adjacent_commits_returns_invalid_request(self):
+        state = self.get("/api/state").get_json()
+        h0 = state["commits"][0]["hash"]
+        h2 = state["commits"][2]["hash"]
+
+        data = self.post("/api/rebase", json={
+            "operation": "fixup",
+            "hashes": [h0, h2],
+        }).get_json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["error"], "invalid_request")
+
+
+# ---------------------------------------------------------------------------
+# POST /api/submodule/update
+# ---------------------------------------------------------------------------
+
+class SubmoduleUpdateEndpointTests(StandardAPITest):
+
+    def test_submodule_update_uses_post(self):
+        resp = self.get("/api/submodule/update")
+        self.assertEqual(resp.status_code, 405)
+
+    def test_submodule_update_requires_auth(self):
+        resp = self.client.post("/api/submodule/update")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_submodule_update_returns_state(self):
+        data = self.post("/api/submodule/update").get_json()
+        self.assertTrue(data["ok"])
+        self.assertIn("commits", data)
+        self.assertIn("branch", data)
+        self.assertIn("dirty", data)
+
+
+# ---------------------------------------------------------------------------
+# GET /log
+# ---------------------------------------------------------------------------
+
+class LogEndpointTests(StandardAPITest):
+
+    def setUp(self):
+        super().setUp()
+        import git_history as _gh_module
+        self._log_path_orig = _gh_module._LOG_PATH
+        self._log_file = self.tmpdir / "test.log"
+        _gh_module._LOG_PATH = self._log_file
+
+    def tearDown(self):
+        import git_history as _gh_module
+        _gh_module._LOG_PATH = self._log_path_orig
+        super().tearDown()
+
+    def test_log_returns_200_when_file_does_not_exist(self):
+        resp = self.client.get("/log")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, b"")
+
+    def test_log_returns_plain_text_content_type(self):
+        resp = self.client.get("/log")
+        self.assertIn("text/plain", resp.content_type)
+
+    def test_log_requires_no_auth(self):
+        resp = self.client.get("/log")
+        self.assertNotEqual(resp.status_code, 403)
+
+    def test_log_returns_entries_after_reset(self):
+        state = self.get("/api/state").get_json()
+        self.post("/api/reset", json={"hash": state["commits"][3]["hash"]})
+
+        resp = self.client.get("/log")
+        lines = [l for l in resp.data.decode("utf-8").splitlines() if l]
+        self.assertEqual(len(lines), 1)
+        parts = lines[0].split()
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(parts[1], "main")
+        self.assertEqual(len(parts[2]), 40)
+
+    def test_log_accumulates_entries_across_operations(self):
+        state = self.get("/api/state").get_json()
+        self.post("/api/reset", json={"hash": state["commits"][2]["hash"]})
+
+        state2 = self.get("/api/state").get_json()
+        self.post("/api/rebase", json={
+            "operation": "reword",
+            "hashes": [state2["commits"][0]["hash"]],
+            "new_message": "log test reword",
+        })
+
+        lines = [l for l in self.client.get("/log").data.decode("utf-8").splitlines() if l]
+        self.assertEqual(len(lines), 2)
 
 
 if __name__ == "__main__":

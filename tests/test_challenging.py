@@ -761,32 +761,6 @@ class SequentialOperationsTests(ChallengeBase):
         self.assertTrue(r2["ok"])
         self.assertEqual(len(r2["commits"]), count - 1)
 
-    def test_fixup_oldest_visible_with_restricted_start(self):
-        """
-        When _start excludes the root, fixup of the oldest visible commit
-        extends the base by one. Two sequential such fixups must both succeed.
-        """
-        state = self.gh.read_state()
-        if len(state["commits"]) < 3:
-            self.skipTest("need at least 3 commits")
-
-        # Set start to the 2nd-oldest commit so oldest visible has a parent.
-        new_start = state["commits"][-2]["hash"]
-        gh = GitHistory(str(self.repo), start=new_start)
-        sub = gh.read_state()
-        oldest = sub["commits"][-1]
-
-        r1 = gh.rebase("fixup", hashes=[oldest["hash"]])
-        self.assertTrue(r1["ok"], f"first fixup-oldest failed: {r1}")
-        self.assertEqual(len(r1["commits"]), len(sub["commits"]) - 1)
-
-        sub2 = gh.read_state()
-        if len(sub2["commits"]) >= 2:
-            oldest2 = sub2["commits"][-1]
-            r2 = gh.rebase("fixup", hashes=[oldest2["hash"]])
-            self.assertTrue(r2["ok"], f"second fixup-oldest failed: {r2}")
-            self.assertEqual(len(r2["commits"]), len(sub2["commits"]) - 1)
-
     def test_interleaved_squash_and_reword_preserve_all_other_messages(self):
         """After squash + reword, commits not involved must still have original messages."""
         state = self.gh.read_state()
