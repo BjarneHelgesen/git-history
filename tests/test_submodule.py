@@ -737,5 +737,234 @@ class SwitchBranchSubmoduleTests(ChallengeBase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Fixture: trivial commits above a gitlink-only commit
+# ---------------------------------------------------------------------------
+
+def _build_repo_trivials_above_gitlink(parent: Path):
+    """Six-commit repo: base, add lib, bump lib, alpha, beta, gamma."""
+    upstream = parent / "lib-upstream-tg"
+    upstream.mkdir()
+    init_repo(upstream)
+    _commit_raw(upstream, "lib.py", b"# v1\n", "lib v1", "alice", 0)
+    v1 = _git(upstream, "git", "rev-parse", "HEAD").stdout.strip()
+    _commit_raw(upstream, "lib.py", b"# v2\n", "lib v2", "alice", 1)
+    v2 = _git(upstream, "git", "rev-parse", "HEAD").stdout.strip()
+
+    repo = parent / "repo-tg"
+    repo.mkdir()
+    init_repo(repo)
+    _commit_raw(repo, "main.txt", b"base\n", "base", "alice", 0)
+
+    env1 = _commit_env("bob", 1)
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always",
+         "submodule", "add", "--quiet", str(upstream), "lib"],
+        cwd=str(repo), env=env1, capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo / "lib"), "checkout", "--quiet", v1],
+        capture_output=True, check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "add lib"],
+                   cwd=str(repo), env=env1, capture_output=True, check=True)
+
+    env2 = _commit_env("carol", 2)
+    subprocess.run(
+        ["git", "-C", str(repo / "lib"), "checkout", "--quiet", v2],
+        capture_output=True, check=True,
+    )
+    subprocess.run(["git", "add", "lib"], cwd=str(repo), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "bump lib"],
+                   cwd=str(repo), env=env2, capture_output=True, check=True)
+
+    _commit_raw(repo, "a.txt", b"alpha\n", "commit alpha", "alice", 3)
+    _commit_raw(repo, "b.txt", b"beta\n",  "commit beta",  "bob",   4)
+    _commit_raw(repo, "c.txt", b"gamma\n", "commit gamma", "carol", 5)
+    return repo, v1, v2
+
+
+# ---------------------------------------------------------------------------
+# Regression: rebase on commits above a gitlink must not replay the gitlink
+# ---------------------------------------------------------------------------
+
+class TrivialCommitsAboveGitlinkTests(ChallengeBase):
+
+    def setUp(self):
+        super().setUp()
+        self.repo, self.v1, self.v2 = _build_repo_trivials_above_gitlink(self.tmpdir)
+        self.gh = GitHistory(str(self.repo))
+
+    def _by_msg(self, state=None):
+        s = state or self.gh.read_state()
+        return {c["message"]: c["hash"] for c in s["commits"]}
+
+    def _order(self, state=None):
+        s = state or self.gh.read_state()
+        return [c["hash"] for c in s["commits"]]
+
+    def _has_gitlink(self):
+        r = _git(self.repo, "git", "ls-tree", "HEAD", "lib")
+        return "160000" in r.stdout
+
+    # -- fixup ---------------------------------------------------------------
+
+    def test_fixup_head_into_predecessor_succeeds(self):
+        state = self.gh.read_state()
+        bm = self._by_msg(state)
+        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
+        self.assertTrue(result["ok"], f"fixup HEAD failed: {result}")
+        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+        msgs = [c["message"] for c in result["commits"]]
+        self.assertNotIn("commit gamma", msgs)
+        self.assertIn("commit beta", msgs)
+
+    def test_fixup_head_leaves_repo_clean(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["rebase_in_progress"],
+                         "rebase must not be left in progress after fixup")
+        self.assertFalse(result["dirty"])
+
+    def test_fixup_head_preserves_gitlink(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
+        self.assertTrue(result["ok"])
+        self.assertTrue(self._has_gitlink(),
+                        "gitlink must survive fixup of a commit above it")
+
+    def test_fixup_head_minus_one_into_predecessor_succeeds(self):
+        state = self.gh.read_state()
+        bm = self._by_msg(state)
+        result = self.gh.rebase("fixup", hashes=[bm["commit beta"]])
+        self.assertTrue(result["ok"], f"fixup HEAD~1 failed: {result}")
+        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+        msgs = [c["message"] for c in result["commits"]]
+        self.assertNotIn("commit beta", msgs)
+        self.assertIn("commit alpha", msgs)
+
+    def test_fixup_head_minus_one_leaves_repo_clean(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("fixup", hashes=[bm["commit beta"]])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["rebase_in_progress"])
+        self.assertFalse(result["dirty"])
+
+    def test_fixup_top_two_commits_together_succeeds(self):
+        state = self.gh.read_state()
+        bm = self._by_msg(state)
+        result = self.gh.rebase(
+            "fixup",
+            hashes=[bm["commit gamma"], bm["commit beta"]],
+        )
+        self.assertTrue(result["ok"], f"multi-fixup failed: {result}")
+        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+
+    # -- reword --------------------------------------------------------------
+
+    def test_reword_head_succeeds(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("reword", hashes=[bm["commit gamma"]],
+                                new_message="gamma renamed")
+        self.assertTrue(result["ok"], f"reword HEAD failed: {result}")
+        msgs = [c["message"] for c in result["commits"]]
+        self.assertIn("gamma renamed", msgs)
+        self.assertNotIn("commit gamma", msgs)
+
+    def test_reword_head_leaves_repo_clean(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("reword", hashes=[bm["commit gamma"]],
+                                new_message="renamed")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["rebase_in_progress"])
+        self.assertFalse(result["dirty"])
+
+    def test_reword_head_minus_one_succeeds(self):
+        bm = self._by_msg()
+        result = self.gh.rebase("reword", hashes=[bm["commit beta"]],
+                                new_message="beta renamed")
+        self.assertTrue(result["ok"], f"reword HEAD~1 failed: {result}")
+        msgs = [c["message"] for c in result["commits"]]
+        self.assertIn("beta renamed", msgs)
+
+    def test_reword_head_preserves_gitlink(self):
+        bm = self._by_msg()
+        self.gh.rebase("reword", hashes=[bm["commit gamma"]], new_message="x")
+        self.assertTrue(self._has_gitlink(),
+                        "gitlink must survive reword of a commit above it")
+
+    # -- move ----------------------------------------------------------------
+
+    def test_move_swap_top_two_trivial_commits_succeeds(self):
+        bm = self._by_msg()
+        order = self._order()
+        g = order.index(bm["commit gamma"])
+        b = order.index(bm["commit beta"])
+        order[g], order[b] = order[b], order[g]
+        result = self.gh.rebase("move", order=order)
+        self.assertTrue(result["ok"],
+                        f"swap of top two trivial commits failed: {result}")
+        self.assert_valid_state(result)
+
+    def test_move_swap_top_two_leaves_repo_clean(self):
+        bm = self._by_msg()
+        order = self._order()
+        g = order.index(bm["commit gamma"])
+        b = order.index(bm["commit beta"])
+        order[g], order[b] = order[b], order[g]
+        result = self.gh.rebase("move", order=order)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["rebase_in_progress"])
+        self.assertFalse(result["dirty"])
+
+    def test_move_swap_top_two_preserves_gitlink(self):
+        bm = self._by_msg()
+        order = self._order()
+        g = order.index(bm["commit gamma"])
+        b = order.index(bm["commit beta"])
+        order[g], order[b] = order[b], order[g]
+        result = self.gh.rebase("move", order=order)
+        self.assertTrue(result["ok"])
+        self.assertTrue(self._has_gitlink(),
+                        "gitlink must survive swap of trivial commits above it")
+
+    def test_move_rotate_all_three_trivial_commits_succeeds(self):
+        bm = self._by_msg()
+        order = self._order()
+        al = bm["commit alpha"]
+        be = bm["commit beta"]
+        ga = bm["commit gamma"]
+        al_i, be_i, ga_i = order.index(al), order.index(be), order.index(ga)
+        order[ga_i], order[be_i], order[al_i] = be, al, ga
+        result = self.gh.rebase("move", order=order)
+        self.assertTrue(result["ok"],
+                        f"3-commit rotate above gitlink failed: {result}")
+        self.assert_valid_state(result)
+
+    def test_move_gitlink_commit_still_blocked(self):
+        bm = self._by_msg()
+        order = self._order()
+        bl_i = order.index(bm["bump lib"])
+        ga_i = order.index(bm["commit gamma"])
+        order[bl_i], order[ga_i] = order[ga_i], order[bl_i]
+        result = self.gh.rebase("move", order=order)
+        self.assertTrue(result["ok"],
+                        "moving a gitlink-only commit should be allowed")
+
+    # -- squash --------------------------------------------------------------
+
+    def test_squash_top_two_trivial_commits_succeeds(self):
+        state = self.gh.read_state()
+        bm = self._by_msg(state)
+        result = self.gh.rebase(
+            "squash",
+            hashes=[bm["commit gamma"], bm["commit beta"]],
+        )
+        self.assertTrue(result["ok"], f"squash top two failed: {result}")
+        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+
+
 if __name__ == "__main__":
     unittest.main()
