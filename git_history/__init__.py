@@ -347,6 +347,10 @@ class GitHistory:
             return {"ok": False, "error": "invalid_request"}
 
         # Validate and build a mapping from hash -> todo command (default pick).
+        # Each branch computes a minimal rebase range: only the commits that
+        # actually need to change are included in the todo.  This prevents
+        # git from replaying unrelated submodule commits when the user only
+        # wants to touch the top one or two commits.
         if operation == "move":
             if order is None or sorted(order) != sorted(visible):
                 return {"ok": False, "error": "invalid_request"}
@@ -354,7 +358,17 @@ class GitHistory:
                 return self.read_state()
             if self._any_moved_commit_touches_gitmodules(visible, order):
                 return {"ok": False, "error": "gitmodules_in_range"}
-            todo_hashes = list(reversed(order))
+            # Minimal range: only go back as far as the oldest position that
+            # actually changes.  Commits below that position are untouched.
+            changed_idx = [i for i, (h, h2) in enumerate(zip(visible, order)) if h != h2]
+            oldest_changed = max(changed_idx)
+            range_set = set(visible[:oldest_changed + 1])
+            order_slice = [h for h in order if h in range_set]
+            todo_hashes = list(reversed(order_slice))
+            if oldest_changed + 1 < len(visible):
+                base = visible[oldest_changed + 1]
+            else:
+                base = self._start
             mark = {}
         elif operation in ("squash", "fixup"):
             if not hashes or any(h not in visible for h in hashes):
@@ -363,18 +377,32 @@ class GitHistory:
             indices = sorted(visible.index(h) for h in hashes)
             if indices != list(range(indices[0], indices[-1] + 1)):
                 return {"ok": False, "error": "invalid_request"}
-            todo_hashes = list(reversed(visible))
             if len(hashes) == 1:
                 mark = {hashes[0]: operation}
             else:
                 # The oldest in the group stays as pick; the rest fold into it.
                 oldest_in_group = max(hashes, key=visible.index)
                 mark = {h: operation for h in hashes if h != oldest_in_group}
+            # Minimal range: include the fold target (oldest_idx + 1) and
+            # everything above it up to HEAD.  visible[:oldest_idx+2] clamps
+            # naturally to all-of-visible when oldest_idx is near the end.
+            oldest_idx = indices[-1]
+            todo_hashes = list(reversed(visible[:oldest_idx + 2]))
+            if oldest_idx + 2 < len(visible):
+                base = visible[oldest_idx + 2]
+            else:
+                base = self._start
         elif operation == "reword":
             if (not hashes or len(hashes) != 1 or new_message is None
                     or hashes[0] not in visible):
                 return {"ok": False, "error": "invalid_request"}
-            todo_hashes = list(reversed(visible))
+            # Minimal range: replay only the reworded commit and those above it.
+            idx = visible.index(hashes[0])
+            todo_hashes = list(reversed(visible[:idx + 1]))
+            if idx + 1 < len(visible):
+                base = visible[idx + 1]
+            else:
+                base = self._start
             mark = {}
         else:
             return {"ok": False, "error": "invalid_request"}
@@ -385,7 +413,6 @@ class GitHistory:
         oldest_visible = visible[-1]
         extend = (operation in ("squash", "fixup")
                   and oldest_visible in (hashes or []))
-        base = self._start
         if extend:
             if base is None:
                 # Root commit is the squash target (nothing to fold into).
