@@ -90,12 +90,11 @@ class SubmoduleBase(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
+        return {c.message: c.commit_hash for c in s.commits}
 
     def _order(self, state=None):
         s = state or self.gh.read_state()
-        return [c["hash"] for c in s["commits"]]
-
+        return [c.commit_hash for c in s.commits]
     def _lib_head(self):
         return _git(self.repo / "lib", "git", "rev-parse", "HEAD").stdout.strip()
 
@@ -201,8 +200,8 @@ class ResetGitmodulesGuardTests(SubmoduleBase):
         # HEAD has .gitmodules; target "base" has none
         bm = self._by_msg()
         result = self.gh.reset(bm["base"])
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_differ")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_differ")
 
     def test_reset_blocked_when_resetting_forward_past_add_submodule(self):
         # Park HEAD at "base" (no .gitmodules), attempt redo to "add lib"
@@ -210,21 +209,21 @@ class ResetGitmodulesGuardTests(SubmoduleBase):
         _git(self.repo, "git", "reset", "--hard", bm["base"])
         self.gh = GitHistory(str(self.repo))
         result = self.gh.reset(bm["add lib"])
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_differ")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_differ")
 
     def test_reset_succeeds_when_gitmodules_identical_and_gitlink_changes(self):
         # HEAD = update main (lib=v2), target = add lib (lib=v1): same .gitmodules
         bm = self._by_msg()
         result = self.gh.reset(bm["add lib"])
-        self.assertTrue(result["ok"], f"expected success, got: {result}")
+        self.assertTrue(result.ok, f"expected success, got: {result}")
 
     def test_reset_returns_submodule_update_suggested_when_gitlink_changes(self):
         bm = self._by_msg()
         result = self.gh.reset(bm["add lib"])
-        self.assertTrue(result["ok"])
+        self.assertTrue(result.ok)
         self.assertTrue(
-            result.get("submodule_update_suggested"),
+            result.submodule_update_suggested,
             "expected submodule_update_suggested=True when gitlink pointer changes",
         )
 
@@ -232,9 +231,9 @@ class ResetGitmodulesGuardTests(SubmoduleBase):
         # bump lib and update main both point lib at v2 — no pointer difference
         bm = self._by_msg()
         result = self.gh.reset(bm["bump lib"])
-        self.assertTrue(result["ok"])
+        self.assertTrue(result.ok)
         self.assertFalse(
-            result.get("submodule_update_suggested", False),
+            result.submodule_update_suggested,
             "should not suggest update when gitlink pointer does not change",
         )
 
@@ -245,26 +244,26 @@ class ResetGitmodulesGuardTests(SubmoduleBase):
         _git(self.repo, "git", "reset", "--hard", bm["base"])
         _commit_raw(self.repo, "other.txt", b"x\n", "other", "bob", 10)
         gh = GitHistory(str(self.repo))
-        target = gh.read_state()["commits"][-1]["hash"]
+        target = gh.read_state().commits[-1].commit_hash
         result = gh.reset(target)
-        self.assertTrue(result["ok"])
-        self.assertFalse(result.get("submodule_update_suggested", False))
+        self.assertTrue(result.ok)
+        self.assertFalse(result.submodule_update_suggested)
 
     def test_reset_dirty_tree_still_blocked_when_gitmodules_same(self):
         # .gitmodules identical between target and HEAD, but working tree is dirty
         bm = self._by_msg()
         (self.repo / "main.txt").write_bytes(b"dirty\n")
         result = self.gh.reset(bm["add lib"])
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "dirty_tree")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "dirty_tree")
 
     def test_gitmodules_check_takes_precedence_over_dirty_tree_check(self):
         # When both .gitmodules differs AND tree is dirty, gitmodules_differ is returned
         bm = self._by_msg()
         (self.repo / "main.txt").write_bytes(b"dirty\n")
         result = self.gh.reset(bm["base"])
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_differ")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_differ")
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +281,7 @@ class SubmoduleUpdateTests(SubmoduleBase):
         self.assertEqual(self._lib_head(), self.v2,
                          "lib should still be at v2 before calling submodule_update()")
         result = self.gh.submodule_update()
-        self.assertTrue(result["ok"], f"submodule_update() failed: {result}")
+        self.assertTrue(result.ok, f"submodule_update() failed: {result}")
         self.assertEqual(self._lib_head(), self.v1,
                          "lib should be at v1 after submodule_update()")
 
@@ -290,14 +289,14 @@ class SubmoduleUpdateTests(SubmoduleBase):
         bm = self._by_msg()
         self.gh.reset(bm["add lib"])
         result = self.gh.submodule_update()
-        self.assertTrue(result["ok"])
+        self.assertTrue(result.ok)
         self.assert_valid_state(result)
-        self.assertFalse(result["dirty"])
+        self.assertFalse(result.dirty)
 
     def test_submodule_update_when_already_synced_is_a_noop(self):
         # No reset first; lib already matches HEAD pointer (v2). Should still succeed.
         result = self.gh.submodule_update()
-        self.assertTrue(result["ok"])
+        self.assertTrue(result.ok)
         self.assertEqual(self._lib_head(), self.v2)
 
     def test_submodule_update_then_reset_back_to_bump_lib_restores_v2(self):
@@ -310,11 +309,58 @@ class SubmoduleUpdateTests(SubmoduleBase):
         self.assertEqual(self._lib_head(), self.v1)
 
         result = self.gh.reset(bump_lib_hash)
-        self.assertTrue(result["ok"])
-        self.assertTrue(result.get("submodule_update_suggested"),
+        self.assertTrue(result.ok)
+        self.assertTrue(result.submodule_update_suggested,
                         "redo to bump lib (lib=v2) should suggest update")
         self.gh.submodule_update()
         self.assertEqual(self._lib_head(), self.v2)
+
+    def test_submodule_update_clears_update_suggestion(self):
+        bm = self._by_msg()
+        self.gh.reset(bm["add lib"])
+        result = self.gh.submodule_update()
+        self.assertTrue(result.ok)
+        self.assertFalse(result.submodule_update_suggested)
+
+    def test_submodule_update_initializes_uninitialized_submodule(self):
+        # deinit removes lib's working-tree content; --init must restore it
+        subprocess.run(
+            ["git", "submodule", "deinit", "--force", "lib"],
+            cwd=str(self.repo), check=True, capture_output=True,
+        )
+        self.assertFalse((self.repo / "lib" / "lib.py").exists())
+        result = self.gh.submodule_update()
+        self.assertTrue(result.ok, f"submodule_update() failed: {result}")
+        self.assertTrue((self.repo / "lib" / "lib.py").exists())
+        self.assertEqual(self._lib_head(), self.v2)
+
+    def test_submodule_update_on_repo_without_submodules_succeeds(self):
+        from make_test_repo import init_repo
+        plain = self.tmpdir / "plain-no-sub"
+        plain.mkdir()
+        init_repo(plain)
+        _commit_raw(plain, "a.txt", b"a\n", "first", "alice", 0)
+        result = GitHistory(str(plain)).submodule_update()
+        self.assertTrue(result.ok)
+
+    def test_submodule_update_blocked_during_rebase(self):
+        bm = self._by_msg()
+        order = [c.commit_hash for c in self.gh.read_state().commits]
+        # Attempt a rebase that will leave the repo in a rebase state.
+        # Using the conflict repo to trigger this.
+        from conftest import _build_conflict_repo
+        conflict_dir = self.tmpdir / "conflict-sub"
+        conflict_dir.mkdir()
+        conflict_repo = _build_conflict_repo(conflict_dir)
+        gh = GitHistory(str(conflict_repo))
+        state = gh.read_state()
+        order = [c.commit_hash for c in state.commits]
+        order[0], order[1] = order[1], order[0]
+        gh.move(order)
+        # Now gh is in a rebase state (conflict). Try submodule_update.
+        result = gh.submodule_update()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "rebase_in_progress")
 
 
 # ---------------------------------------------------------------------------
@@ -329,9 +375,9 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         # Move add lib to the front
         idx = order.index(bm["add lib"])
         order.insert(0, order.pop(idx))
-        result = self.gh.rebase("move", order=order)
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_in_range")
+        result = self.gh.move(order)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_in_range")
 
     def test_move_blocked_when_add_lib_is_moved_down(self):
         # Move add lib toward the bottom; still blocked because it changes position
@@ -339,9 +385,9 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         order = self._order()
         idx = order.index(bm["add lib"])
         order.append(order.pop(idx))  # move to last position
-        result = self.gh.rebase("move", order=order)
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_in_range")
+        result = self.gh.move(order)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_in_range")
 
     def test_move_allowed_when_only_bump_lib_is_repositioned(self):
         # bump lib only changes the gitlink, not .gitmodules — reorder must succeed
@@ -350,8 +396,8 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         um_idx = order.index(bm["update main"])
         bl_idx = order.index(bm["bump lib"])
         order[um_idx], order[bl_idx] = order[bl_idx], order[um_idx]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"],
+        result = self.gh.move(order)
+        self.assertTrue(result.ok,
                         f"move of gitlink-only commit should be allowed, got: {result}")
 
     def test_move_allowed_when_add_lib_stays_in_place(self):
@@ -361,24 +407,24 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         um_idx = order.index(bm["update main"])
         bl_idx = order.index(bm["bump lib"])
         order[um_idx], order[bl_idx] = order[bl_idx], order[um_idx]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"],
+        result = self.gh.move(order)
+        self.assertTrue(result.ok,
                         "move must be allowed when the .gitmodules commit stays in place")
 
     def test_move_noop_with_gitmodules_in_range_is_still_allowed(self):
         # Sending the unchanged order must short-circuit without touching add lib
         order = self._order()
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"])
+        result = self.gh.move(order)
+        self.assertTrue(result.ok)
         self.assertEqual(self._order(result), order)
 
     def test_move_blocked_when_full_rotation_includes_add_lib(self):
         # Rotate all four commits: add lib is among the movers
         order = self._order()
         rotated = order[1:] + [order[0]]
-        result = self.gh.rebase("move", order=rotated)
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_in_range")
+        result = self.gh.move(rotated)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_in_range")
 
     def test_move_preserves_gitlink_after_reorder_of_non_gitmodules_commits(self):
         # After a permitted move, the gitlink entry must still exist in HEAD
@@ -387,8 +433,8 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         um_idx = order.index(bm["update main"])
         bl_idx = order.index(bm["bump lib"])
         order[um_idx], order[bl_idx] = order[bl_idx], order[um_idx]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"])
+        result = self.gh.move(order)
+        self.assertTrue(result.ok)
         r = _git(self.repo, "git", "ls-tree", "HEAD", "lib")
         self.assertIn("160000", r.stdout,
                       "gitlink must still be present in HEAD after reorder")
@@ -399,10 +445,10 @@ class RebaseMoveGitmodulesTests(SubmoduleBase):
         order = self._order()
         idx = order.index(bm["add lib"])
         order.insert(0, order.pop(idx))
-        self.gh.rebase("move", order=order)
+        self.gh.move(order)
         state = self.gh.read_state()
-        self.assertFalse(state["rebase_in_progress"])
-        self.assertFalse(state["dirty"])
+        self.assertFalse(state.rebase_in_progress)
+        self.assertFalse(state.dirty)
 
 
 # ---------------------------------------------------------------------------
@@ -415,12 +461,9 @@ class SubmoduleRebaseOperationsTests(SubmoduleBase):
     def test_squash_add_lib_and_bump_lib(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add lib"], bm["bump lib"]],
-        )
-        self.assertTrue(result["ok"], f"squash of submodule commits failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+        result = self.gh.squash([bm["add lib"], bm["bump lib"]])
+        self.assertTrue(result.ok, f"squash of submodule commits failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
         r = _git(self.repo, "git", "ls-tree", "HEAD", "lib")
         self.assertIn("160000", r.stdout,
                       "gitlink missing from HEAD after squash of submodule commits")
@@ -428,10 +471,10 @@ class SubmoduleRebaseOperationsTests(SubmoduleBase):
     def test_fixup_bump_lib_into_add_lib(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("fixup", hashes=[bm["bump lib"]])
-        self.assertTrue(result["ok"], f"fixup of submodule commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["bump lib"]])
+        self.assertTrue(result.ok, f"fixup of submodule commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("bump lib", msgs)
         self.assertIn("add lib", msgs)
 
@@ -440,9 +483,8 @@ class SubmoduleRebaseOperationsTests(SubmoduleBase):
         h = bm["add lib"]
         old_tree = _git(self.repo, "git", "rev-parse", h + ":").stdout.strip()
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="introduce lib submodule")
-        self.assertTrue(result["ok"], f"reword of submodule commit failed: {result}")
-
+        result = self.gh.reword(h, "introduce lib submodule")
+        self.assertTrue(result.ok, f"reword of submodule commit failed: {result}")
         new_h = self._by_msg(result).get("introduce lib submodule")
         self.assertIsNotNone(new_h, "rewarded commit not found in result")
         new_tree = _git(self.repo, "git", "rev-parse", new_h + ":").stdout.strip()
@@ -452,13 +494,9 @@ class SubmoduleRebaseOperationsTests(SubmoduleBase):
     def test_squash_bump_lib_with_unrelated_update_main(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["bump lib"], bm["update main"]],
-        )
-        self.assertTrue(result["ok"], f"squash of submodule + unrelated commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.squash([bm["bump lib"], bm["update main"]])
+        self.assertTrue(result.ok, f"squash of submodule + unrelated commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
 
 # ---------------------------------------------------------------------------
 # Repo builder: three regular commits above a .gitmodules commit
@@ -530,12 +568,11 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
+        return {c.message: c.commit_hash for c in s.commits}
 
     def _order(self, state=None):
         s = state or self.gh.read_state()
-        return [c["hash"] for c in s["commits"]]
-
+        return [c.commit_hash for c in s.commits]
     def _has_gitlink(self):
         r = _git(self.repo, "git", "ls-tree", "HEAD", "lib")
         return "160000" in r.stdout
@@ -548,8 +585,8 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
         order = self._order()
         g, b = order.index(bm["commit gamma"]), order.index(bm["commit beta"])
         order[g], order[b] = order[b], order[g]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"], f"move above .gitmodules failed: {result}")
+        result = self.gh.move(order)
+        self.assertTrue(result.ok, f"move above .gitmodules failed: {result}")
         self.assert_valid_state(result)
 
     def test_move_three_commits_above_gitmodules_succeeds(self):
@@ -561,8 +598,8 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
         ga = bm["commit gamma"]
         al_idx, be_idx, ga_idx = order.index(al), order.index(be), order.index(ga)
         order[ga_idx], order[be_idx], order[al_idx] = be, al, ga
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"], f"3-commit rotate above .gitmodules failed: {result}")
+        result = self.gh.move(order)
+        self.assertTrue(result.ok, f"3-commit rotate above .gitmodules failed: {result}")
         self.assert_valid_state(result)
 
     def test_move_above_gitmodules_preserves_gitlink(self):
@@ -570,8 +607,8 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
         order = self._order()
         g, b = order.index(bm["commit gamma"]), order.index(bm["commit beta"])
         order[g], order[b] = order[b], order[g]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"])
+        result = self.gh.move(order)
+        self.assertTrue(result.ok)
         self.assertTrue(self._has_gitlink(),
                         "gitlink missing from HEAD after move above .gitmodules")
 
@@ -580,45 +617,44 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
         order = self._order()
         al_idx = order.index(bm["add lib"])
         order.insert(0, order.pop(al_idx))
-        result = self.gh.rebase("move", order=order)
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "gitmodules_in_range")
+        result = self.gh.move(order)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "gitmodules_in_range")
 
     # -- reword --------------------------------------------------------------
 
     def test_reword_top_commit_above_gitmodules_succeeds(self):
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit gamma"]], new_message="gamma updated")
-        self.assertTrue(result["ok"], f"reword gamma failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(bm["commit gamma"], "gamma updated")
+        self.assertTrue(result.ok, f"reword gamma failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("gamma updated", msgs)
         self.assertNotIn("commit gamma", msgs)
 
     def test_reword_commit_adjacent_to_gitmodules_succeeds(self):
         # alpha is immediately above add lib
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit alpha"]], new_message="alpha updated")
-        self.assertTrue(result["ok"], f"reword alpha (adjacent to .gitmodules) failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(bm["commit alpha"], "alpha updated")
+        self.assertTrue(result.ok, f"reword alpha (adjacent to .gitmodules) failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("alpha updated", msgs)
 
     def test_reword_above_gitmodules_repo_stays_clean(self):
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit beta"]], new_message="beta updated")
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["dirty"])
-        self.assertFalse(result["rebase_in_progress"])
-
+        result = self.gh.reword(bm["commit beta"], "beta updated")
+        self.assertTrue(result.ok)
+        self.assertFalse(result.dirty)
+        self.assertFalse(result.rebase_in_progress)
     # -- fixup ---------------------------------------------------------------
 
     def test_fixup_top_commit_above_gitmodules_succeeds(self):
         # gamma folds into beta
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
-        self.assertTrue(result["ok"], f"fixup gamma failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["commit gamma"]])
+        self.assertTrue(result.ok, f"fixup gamma failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("commit gamma", msgs)
         self.assertIn("commit beta", msgs)
 
@@ -626,16 +662,16 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
         # beta folds into alpha (alpha is adjacent to add lib)
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("fixup", hashes=[bm["commit beta"]])
-        self.assertTrue(result["ok"], f"fixup beta (folds into alpha adjacent to .gitmodules) failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["commit beta"]])
+        self.assertTrue(result.ok, f"fixup beta (folds into alpha adjacent to .gitmodules) failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("commit beta", msgs)
         self.assertIn("commit alpha", msgs)
 
     def test_fixup_above_gitmodules_preserves_gitlink(self):
         bm = self._by_msg()
-        self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
+        self.gh.fixup([bm["commit gamma"]])
         self.assertTrue(self._has_gitlink(),
                         "gitlink missing from HEAD after fixup above .gitmodules")
 
@@ -644,31 +680,26 @@ class RebaseAfterGitmodulesTests(ChallengeBase):
     def test_squash_top_two_commits_above_gitmodules_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("squash", hashes=[bm["commit beta"], bm["commit gamma"]])
-        self.assertTrue(result["ok"], f"squash beta+gamma failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.squash([bm["commit beta"], bm["commit gamma"]])
+        self.assertTrue(result.ok, f"squash beta+gamma failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_squash_commits_adjacent_to_gitmodules_succeeds(self):
         # alpha (adjacent to add lib) squashed with beta; both above .gitmodules
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("squash", hashes=[bm["commit alpha"], bm["commit beta"]])
-        self.assertTrue(result["ok"], f"squash alpha+beta (alpha adjacent to .gitmodules) failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.squash([bm["commit alpha"], bm["commit beta"]])
+        self.assertTrue(result.ok, f"squash alpha+beta (alpha adjacent to .gitmodules) failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_squash_all_three_commits_above_gitmodules_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["commit alpha"], bm["commit beta"], bm["commit gamma"]],
-        )
-        self.assertTrue(result["ok"], f"squash all three above .gitmodules failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 2)
+        result = self.gh.squash([bm["commit alpha"], bm["commit beta"], bm["commit gamma"]])
+        self.assertTrue(result.ok, f"squash all three above .gitmodules failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 2)
 
     def test_squash_above_gitmodules_preserves_gitlink(self):
         bm = self._by_msg()
-        self.gh.rebase("squash", hashes=[bm["commit beta"], bm["commit gamma"]])
+        self.gh.squash([bm["commit beta"], bm["commit gamma"]])
         self.assertTrue(self._has_gitlink(),
                         "gitlink missing from HEAD after squash above .gitmodules")
 
@@ -684,8 +715,8 @@ def _build_two_branch_submodule_repo(parent: Path):
     Returns (repo_path, v1, v2).
     """
     repo, v1, v2 = _build_submodule_repo(parent)
-    bm = {c["message"]: c["hash"]
-          for c in GitHistory(str(repo)).read_state()["commits"]}
+    state = GitHistory(str(repo)).read_state()
+    bm = {c.message: c.commit_hash for c in state.commits}
     _git(repo, "git", "branch", "side", bm["add lib"])
     return repo, v1, v2
 
@@ -703,9 +734,9 @@ class SwitchBranchSubmoduleTests(ChallengeBase):
     def test_switch_suggests_update_when_gitlink_differs(self):
         # main has lib=v2, side has lib=v1 — switch must suggest update
         result = self.gh.switch_branch("side")
-        self.assertTrue(result["ok"], f"switch failed: {result}")
+        self.assertTrue(result.ok, f"switch failed: {result}")
         self.assertTrue(
-            result.get("submodule_update_suggested"),
+            result.submodule_update_suggested,
             "expected submodule_update_suggested=True when gitlink pointer differs between branches",
         )
 
@@ -713,9 +744,9 @@ class SwitchBranchSubmoduleTests(ChallengeBase):
         # Create a branch at the same commit as main; no gitlink change expected
         _git(self.repo, "git", "branch", "same", "HEAD")
         result = self.gh.switch_branch("same")
-        self.assertTrue(result["ok"], f"switch failed: {result}")
+        self.assertTrue(result.ok, f"switch failed: {result}")
         self.assertFalse(
-            result.get("submodule_update_suggested", False),
+            result.submodule_update_suggested,
             "should not suggest update when gitlink pointer is identical between branches",
         )
 
@@ -730,9 +761,9 @@ class SwitchBranchSubmoduleTests(ChallengeBase):
         _commit_raw(plain, "b.txt", b"b\n", "second", "bob", 1)
         gh = GitHistory(str(plain))
         result = gh.switch_branch("other")
-        self.assertTrue(result["ok"], f"switch failed: {result}")
+        self.assertTrue(result.ok, f"switch failed: {result}")
         self.assertFalse(
-            result.get("submodule_update_suggested", False),
+            result.submodule_update_suggested,
             "should not suggest update when repo has no submodules",
         )
 
@@ -798,12 +829,11 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
+        return {c.message: c.commit_hash for c in s.commits}
 
     def _order(self, state=None):
         s = state or self.gh.read_state()
-        return [c["hash"] for c in s["commits"]]
-
+        return [c.commit_hash for c in s.commits]
     def _has_gitlink(self):
         r = _git(self.repo, "git", "ls-tree", "HEAD", "lib")
         return "160000" in r.stdout
@@ -813,85 +843,76 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
     def test_fixup_head_into_predecessor_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
-        self.assertTrue(result["ok"], f"fixup HEAD failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["commit gamma"]])
+        self.assertTrue(result.ok, f"fixup HEAD failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("commit gamma", msgs)
         self.assertIn("commit beta", msgs)
 
     def test_fixup_head_leaves_repo_clean(self):
         bm = self._by_msg()
-        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["rebase_in_progress"],
-                         "rebase must not be left in progress after fixup")
-        self.assertFalse(result["dirty"])
+        result = self.gh.fixup([bm["commit gamma"]])
+        self.assertTrue(result.ok)
+        self.assertFalse(result.rebase_in_progress,                         "rebase must not be left in progress after fixup")
+        self.assertFalse(result.dirty)
 
     def test_fixup_head_preserves_gitlink(self):
         bm = self._by_msg()
-        result = self.gh.rebase("fixup", hashes=[bm["commit gamma"]])
-        self.assertTrue(result["ok"])
+        result = self.gh.fixup([bm["commit gamma"]])
+        self.assertTrue(result.ok)
         self.assertTrue(self._has_gitlink(),
                         "gitlink must survive fixup of a commit above it")
 
     def test_fixup_head_minus_one_into_predecessor_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase("fixup", hashes=[bm["commit beta"]])
-        self.assertTrue(result["ok"], f"fixup HEAD~1 failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["commit beta"]])
+        self.assertTrue(result.ok, f"fixup HEAD~1 failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("commit beta", msgs)
         self.assertIn("commit alpha", msgs)
 
     def test_fixup_head_minus_one_leaves_repo_clean(self):
         bm = self._by_msg()
-        result = self.gh.rebase("fixup", hashes=[bm["commit beta"]])
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["rebase_in_progress"])
-        self.assertFalse(result["dirty"])
-
+        result = self.gh.fixup([bm["commit beta"]])
+        self.assertTrue(result.ok)
+        self.assertFalse(result.rebase_in_progress)
+        self.assertFalse(result.dirty)
     def test_fixup_top_two_commits_together_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase(
-            "fixup",
-            hashes=[bm["commit gamma"], bm["commit beta"]],
-        )
-        self.assertTrue(result["ok"], f"multi-fixup failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.fixup([bm["commit gamma"], bm["commit beta"]])
+        self.assertTrue(result.ok, f"multi-fixup failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     # -- reword --------------------------------------------------------------
 
     def test_reword_head_succeeds(self):
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit gamma"]],
-                                new_message="gamma renamed")
-        self.assertTrue(result["ok"], f"reword HEAD failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(bm["commit gamma"], "gamma renamed")
+        self.assertTrue(result.ok, f"reword HEAD failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("gamma renamed", msgs)
         self.assertNotIn("commit gamma", msgs)
 
     def test_reword_head_leaves_repo_clean(self):
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit gamma"]],
-                                new_message="renamed")
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["rebase_in_progress"])
-        self.assertFalse(result["dirty"])
+        result = self.gh.reword(bm["commit gamma"], "renamed")
+        self.assertTrue(result.ok)
+        self.assertFalse(result.rebase_in_progress)
+        self.assertFalse(result.dirty)
 
     def test_reword_head_minus_one_succeeds(self):
         bm = self._by_msg()
-        result = self.gh.rebase("reword", hashes=[bm["commit beta"]],
-                                new_message="beta renamed")
-        self.assertTrue(result["ok"], f"reword HEAD~1 failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(bm["commit beta"], "beta renamed")
+        self.assertTrue(result.ok, f"reword HEAD~1 failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("beta renamed", msgs)
 
     def test_reword_head_preserves_gitlink(self):
         bm = self._by_msg()
-        self.gh.rebase("reword", hashes=[bm["commit gamma"]], new_message="x")
+        self.gh.reword(bm["commit gamma"], "x")
         self.assertTrue(self._has_gitlink(),
                         "gitlink must survive reword of a commit above it")
 
@@ -903,8 +924,8 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
         g = order.index(bm["commit gamma"])
         b = order.index(bm["commit beta"])
         order[g], order[b] = order[b], order[g]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"],
+        result = self.gh.move(order)
+        self.assertTrue(result.ok,
                         f"swap of top two trivial commits failed: {result}")
         self.assert_valid_state(result)
 
@@ -914,10 +935,10 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
         g = order.index(bm["commit gamma"])
         b = order.index(bm["commit beta"])
         order[g], order[b] = order[b], order[g]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["rebase_in_progress"])
-        self.assertFalse(result["dirty"])
+        result = self.gh.move(order)
+        self.assertTrue(result.ok)
+        self.assertFalse(result.rebase_in_progress)
+        self.assertFalse(result.dirty)
 
     def test_move_swap_top_two_preserves_gitlink(self):
         bm = self._by_msg()
@@ -925,8 +946,8 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
         g = order.index(bm["commit gamma"])
         b = order.index(bm["commit beta"])
         order[g], order[b] = order[b], order[g]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"])
+        result = self.gh.move(order)
+        self.assertTrue(result.ok)
         self.assertTrue(self._has_gitlink(),
                         "gitlink must survive swap of trivial commits above it")
 
@@ -938,8 +959,8 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
         ga = bm["commit gamma"]
         al_i, be_i, ga_i = order.index(al), order.index(be), order.index(ga)
         order[ga_i], order[be_i], order[al_i] = be, al, ga
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"],
+        result = self.gh.move(order)
+        self.assertTrue(result.ok,
                         f"3-commit rotate above gitlink failed: {result}")
         self.assert_valid_state(result)
 
@@ -949,8 +970,8 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
         bl_i = order.index(bm["bump lib"])
         ga_i = order.index(bm["commit gamma"])
         order[bl_i], order[ga_i] = order[ga_i], order[bl_i]
-        result = self.gh.rebase("move", order=order)
-        self.assertTrue(result["ok"],
+        result = self.gh.move(order)
+        self.assertTrue(result.ok,
                         "moving a gitlink-only commit should be allowed")
 
     # -- squash --------------------------------------------------------------
@@ -958,13 +979,9 @@ class TrivialCommitsAboveGitlinkTests(ChallengeBase):
     def test_squash_top_two_trivial_commits_succeeds(self):
         state = self.gh.read_state()
         bm = self._by_msg(state)
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["commit gamma"], bm["commit beta"]],
-        )
-        self.assertTrue(result["ok"], f"squash top two failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.squash([bm["commit gamma"], bm["commit beta"]])
+        self.assertTrue(result.ok, f"squash top two failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
 
 if __name__ == "__main__":
     unittest.main()

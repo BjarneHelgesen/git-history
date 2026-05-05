@@ -24,10 +24,13 @@ def main():
 
     # Bump version on develop, commit, tag
     toml = "pyproject.toml"
-    text, n = re.subn(r'^version = ".*"', f'version = "{version}"', open(toml).read(), flags=re.MULTILINE)
+    with open(toml, encoding="utf-8") as f:
+        text = f.read()
+    text, n = re.subn(r'^version = ".*"', f'version = "{version}"', text, flags=re.MULTILINE)
     if not n:
         sys.exit("version field not found in pyproject.toml")
-    open(toml, "w").write(text)
+    with open(toml, "w", encoding="utf-8") as f:
+        f.write(text)
     git("add", toml)
     git("commit", "-m", f"Set version to {version}")
     git("tag", f"v{version}dev")
@@ -37,26 +40,23 @@ def main():
     git("checkout", "master")
     git("reset", "--hard", "develop")
     git("reset", "--soft", "origin/master")
-    subprocess.run(["git", "restore", "--staged", "CLAUDE.md"], capture_output=True)
+    subprocess.run(["git", "restore", "--staged", "CLAUDE.md"], capture_output=True, check=False)
     if os.path.exists("CLAUDE.md"):
         os.remove("CLAUDE.md")
     git("commit", "-m", f"Release v{version}")
     git("tag", f"v{version}")
     print(f"master:  tagged v{version}")
 
-    # Find previous release tag to bound the changelog range
+    # Find previous release tag on master
     all_tags = git("tag", "--list", "v*", "--sort=-version:refname").splitlines()
     prev = next((t for t in all_tags if not t.endswith("dev") and t != f"v{version}"), None)
-    since = f"{prev}..v{version}dev" if prev else f"v{version}dev"
-    log = git("log", since, "--pretty=format:* %s")
-    range_desc = f"from {prev} to v{version}" if prev else f"for v{version}"
+    since_clause = f"since tag {prev}" if prev else "(first release)"
 
     prompt = (
-        f"Write a free-form changelog for git-history {range_desc}. "
-        f"Here are the commits:\n\n{log}\n\n"
+        f"Write a markdown changelog for git-history v{version} {since_clause}. "
         f"Save it as CHANGELOG.md."
     )
-    subprocess.run(["claude", "-p", prompt, "--allowedTools", "Write"], check=True)
+    subprocess.run(["claude", "-p", prompt, "--allowedTools", "Write,Bash"], check=True)
     print("CHANGELOG.md written. Review before pushing.")
 
 

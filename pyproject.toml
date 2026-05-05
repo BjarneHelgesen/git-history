@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-history"
-version = "0.0.3"
+version = "0.0.4"
 requires-python = ">=3.9"
 # Requires git >= 2.26 (for --empty=keep support in git rebase)
 dependencies = ["flask>=3.0"]
@@ -25,3 +25,6 @@ git_history = ["static/**/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-n auto --dist=loadscope"
+
+[tool.pylint.messages_control]
+disable = ["missing-docstring"]

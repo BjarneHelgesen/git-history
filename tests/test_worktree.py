@@ -126,8 +126,8 @@ class WorktreeStructureTests(WorktreeTest):
     def test_read_state_in_worktree(self):
         """Test that read_state() works in a worktree."""
         state = self.gh.read_state()
-        self.assertTrue(state["ok"])
-        self.assertEqual(len(state["commits"]), 3)
+        self.assertTrue(state.ok)
+        self.assertEqual(len(state.commits), 3)
 
 
 class WorktreeRebaseTests(WorktreeTest):
@@ -218,8 +218,8 @@ class WorktreeRebaseTests(WorktreeTest):
         self.assertNotEqual(rebase_result.returncode, 0, "Rebase should have failed due to conflicts")
 
         state = self.gh.read_state()
-        self.assertTrue(state["ok"])
-        self.assertTrue(state["rebase_in_progress"],
+        self.assertTrue(state.ok)
+        self.assertTrue(state.rebase_in_progress,
                       "read_state() should report rebase_in_progress=True when a rebase is in progress in a worktree")
 
         subprocess.run(
@@ -236,42 +236,41 @@ class WorktreeOperationTests(WorktreeTest):
     def test_rebase_operation_in_worktree(self):
         """Test that rebase operations work in a worktree."""
         state = self.gh.read_state()
-        commits = state["commits"]
+        commits = state.commits
 
         # Try to reorder commits (simplified rebase)
         # For now, just verify that we can attempt it without crashing
         if len(commits) >= 2:
-            hashes = [c["hash"] for c in commits]
+            hashes = [c.commit_hash for c in commits]
             # Try to reorder the last two commits
-            result = self.gh.rebase("move", hashes=[hashes[1]], order=[0, 1])
+            result = self.gh.move([0, 1])
             # We expect this might fail due to conflicts or other issues,
             # but it shouldn't crash with path errors
-            self.assertIn("ok", result)
+            self.assertTrue(hasattr(result, "ok"))
 
     def test_reset_in_worktree(self):
         """Test that reset works in a worktree."""
         state = self.gh.read_state()
-        commits = state["commits"]
+        commits = state.commits
 
         if len(commits) >= 2:
             # Reset to the second newest commit
-            target_hash = commits[1]["hash"]
+            target_hash = commits[1].commit_hash
             result = self.gh.reset(target_hash)
-            self.assertTrue(result["ok"])
+            self.assertTrue(result.ok)
 
             # Verify we're at that commit
             new_state = self.gh.read_state()
-            self.assertEqual(new_state["commits"][0]["hash"], target_hash)
+            self.assertEqual(new_state.commits[0].commit_hash, target_hash)
 
     def test_show_in_worktree(self):
         """Test that show works in a worktree."""
         state = self.gh.read_state()
-        commit_hash = state["commits"][0]["hash"]
+        commit_hash = state.commits[0].commit_hash
 
         result = self.gh.show(commit_hash)
-        self.assertTrue(result["ok"])
-        self.assertIn("info", result)
-        self.assertIn("diff", result)
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.diff)
 
 
 if __name__ == "__main__":

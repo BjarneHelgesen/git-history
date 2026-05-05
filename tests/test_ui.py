@@ -219,12 +219,12 @@ def test_branch_history_group_consecutive_rebases(page, live_server):
 def test_drag_changes_order(page, drag_server):
     page.goto(drag_server["url"])
     page.wait_for_selector(".commit-row")
-    original_hash = page.locator(".commit-row").nth(0).get_attribute("data-hash")
+    original_hash = page.locator(".commit-row").nth(0).get_attribute("data-commit-hash")
     drag_row_and_wait(page,
         page.locator(".commit-row").nth(0),
         page.locator(".commit-row").nth(2),
         "below")
-    assert page.locator(".commit-row").nth(0).get_attribute("data-hash") != original_hash
+    assert page.locator(".commit-row").nth(0).get_attribute("data-commit-hash") != original_hash
 
 
 def test_drag_reorder_step_commits(page, drag_server):
@@ -272,14 +272,14 @@ def test_drag_group_of_commits(page, drag_server):
 def test_drag_to_same_position_is_noop(page, drag_server):
     page.goto(drag_server["url"])
     page.wait_for_selector(".commit-row")
-    original = [r.get_attribute("data-hash")
+    original = [r.get_attribute("data-commit-hash")
                 for r in page.locator(".commit-row").all()]
     drag_row(page,
         page.locator(".commit-row").nth(0),
         page.locator(".commit-row").nth(0),
         "above")
     page.wait_for_timeout(300)
-    result = [r.get_attribute("data-hash")
+    result = [r.get_attribute("data-commit-hash")
               for r in page.locator(".commit-row").all()]
     assert result == original
 
@@ -336,3 +336,58 @@ def test_conflict_abort(page, conflict_server):
     page.locator("#btn-abort").click()
     page.wait_for_selector("#conflict-modal", state="hidden")
     assert page.locator(".commit-row").count() == initial_count
+
+
+# ---------------------------------------------------------------------------
+# Section 4: Selection after operations
+# ---------------------------------------------------------------------------
+
+def _selected_idx(page):
+    return page.evaluate("""() => {
+        const rows = Array.from(document.querySelectorAll('.commit-row'));
+        const sel = document.querySelector('.commit-row.selected');
+        return sel ? rows.indexOf(sel) : -1;
+    }""")
+
+
+def test_fixup_preserves_selection(page, live_server):
+    page.goto(live_server["url"])
+    page.wait_for_selector(".commit-row")
+    page.locator(".commit-row").nth(2).hover()
+    page.locator(".commit-row").nth(2).locator("button[title='Fixup']").click()
+    page.wait_for_function("document.querySelectorAll('.commit-row').length === 23")
+    assert _selected_idx(page) == 1  # idx - 1 = 2 - 1
+
+
+def test_squash_preserves_selection(page, live_server):
+    page.goto(live_server["url"])
+    page.wait_for_selector(".commit-row")
+    page.locator(".commit-row").nth(2).click()
+    page.locator(".commit-row").nth(3).click(modifiers=["Shift"])
+    with page.expect_response("**/api/rebase"):
+        page.locator("#btn-squash").click()
+    page.wait_for_function("document.querySelectorAll('.commit-row').length === 23")
+    assert _selected_idx(page) == 2  # first of the selected range
+
+
+def test_reword_preserves_selection(page, live_server):
+    page.goto(live_server["url"])
+    page.wait_for_selector(".commit-row")
+    page.locator(".commit-row").nth(3).locator(".message").dblclick()
+    ta = page.locator(".reword-input")
+    ta.wait_for()
+    ta.fill("reworded message")
+    with page.expect_response("**/api/rebase"):
+        ta.press("Control+Enter")
+    page.wait_for_function("!document.querySelector('.reword-input')")
+    assert _selected_idx(page) == 3
+
+
+def test_drag_preserves_selection(page, drag_server):
+    page.goto(drag_server["url"])
+    page.wait_for_selector(".commit-row")
+    drag_row_and_wait(page,
+        page.locator(".commit-row").nth(0),
+        page.locator(".commit-row").nth(3),
+        "below")
+    assert _selected_idx(page) == 3

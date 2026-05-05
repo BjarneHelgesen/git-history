@@ -226,7 +226,7 @@ DAYS_BETWEEN_COMMITS = 2
 
 def run(cmd, cwd, env=None):
     result = subprocess.run(
-        cmd, cwd=str(cwd), env=env, capture_output=True, text=True,
+        cmd, cwd=str(cwd), env=env, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         sys.stderr.write(f"FAILED: {' '.join(cmd)}\n")

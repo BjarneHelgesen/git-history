@@ -202,24 +202,23 @@ class ChallengeBase(unittest.TestCase):
     def assert_recoverable(self, gh: GitHistory):
         """Abort any in-progress rebase and verify the repo is clean afterward."""
         state = gh.read_state()
-        if state["rebase_in_progress"]:
+        if state.rebase_in_progress:
             abort = gh.rebase_abort()
-            self.assertTrue(abort["ok"], f"rebase_abort() failed: {abort}")
+            self.assertTrue(abort.ok, f"rebase_abort() failed: {abort}")
             state = gh.read_state()
-        self.assertFalse(state["rebase_in_progress"],
+        self.assertFalse(state.rebase_in_progress,
                          "repo stuck in rebase after abort")
-        self.assertFalse(state["dirty"],
+        self.assertFalse(state.dirty,
                          "repo dirty after recovery from failed operation")
-        self.assertTrue(state["ok"])
+        self.assertTrue(state.ok)
 
     def assert_valid_state(self, state):
-        self.assertTrue(state["ok"])
-        self.assertIsInstance(state["commits"], list)
-        self.assertGreater(len(state["commits"]), 0)
-        for c in state["commits"]:
-            self.assertEqual(len(c["hash"]), 40)
-            self.assertIsInstance(c["message"], str)
-
+        self.assertTrue(state.ok)
+        self.assertIsInstance(state.commits, list)
+        self.assertGreater(len(state.commits), 0)
+        for c in state.commits:
+            self.assertEqual(len(c.commit_hash), 40)
+            self.assertIsInstance(c.message, str)
 
 # ---------------------------------------------------------------------------
 # 1. Merge commits in the visible range
@@ -241,11 +240,11 @@ class MergeCommitTests(ChallengeBase):
     def _merge_and_non_merge_hashes(self):
         state = self.gh.read_state()
         merge, non_merge = [], []
-        for c in state["commits"]:
-            if _parent_count(self.repo, c["hash"]) > 1:
-                merge.append(c["hash"])
+        for c in state.commits:
+            if _parent_count(self.repo, c.commit_hash) > 1:
+                merge.append(c.commit_hash)
             else:
-                non_merge.append(c["hash"])
+                non_merge.append(c.commit_hash)
         return merge, non_merge
 
     def test_squash_of_merge_commit_leaves_repo_recoverable(self):
@@ -253,8 +252,8 @@ class MergeCommitTests(ChallengeBase):
         merge_hashes, _ = self._merge_and_non_merge_hashes()
         self.assertTrue(merge_hashes, "expected at least one merge commit in visible range")
 
-        result = self.gh.rebase("squash", hashes=[merge_hashes[0]])
-        if not result["ok"]:
+        result = self.gh.squash([merge_hashes[0]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -269,8 +268,8 @@ class MergeCommitTests(ChallengeBase):
         if len(non_merge) < 2:
             self.skipTest("need at least two non-merge commits")
 
-        result = self.gh.rebase("squash", hashes=[non_merge[0], non_merge[1]])
-        if not result["ok"]:
+        result = self.gh.squash([non_merge[0], non_merge[1]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             state = self.gh.read_state()
@@ -282,8 +281,8 @@ class MergeCommitTests(ChallengeBase):
         if not non_merge:
             self.skipTest("no non-merge commits")
 
-        result = self.gh.rebase("fixup", hashes=[non_merge[0]])
-        if not result["ok"]:
+        result = self.gh.fixup([non_merge[0]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -291,13 +290,13 @@ class MergeCommitTests(ChallengeBase):
     def test_move_with_merge_commit_present_leaves_repo_recoverable(self):
         """Swap the two newest commits when a merge commit is in the visible list."""
         state = self.gh.read_state()
-        order = [c["hash"] for c in state["commits"]]
+        order = [c.commit_hash for c in state.commits]
         if len(order) < 2:
             self.skipTest("not enough commits")
         order[0], order[1] = order[1], order[0]
 
-        result = self.gh.rebase("move", order=order)
-        if not result["ok"]:
+        result = self.gh.move(order)
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -306,12 +305,12 @@ class MergeCommitTests(ChallengeBase):
         """Reword a regular commit; the merge commit in the todo must not break things."""
         state = self.gh.read_state()
         # Pick the newest commit regardless of whether it's a merge.
-        h = state["commits"][0]["hash"]
+        h = state.commits[0].commit_hash
         if _parent_count(self.repo, h) > 1:
             self.skipTest("newest commit is the merge commit — skip reword test")
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="rewarded top")
-        if not result["ok"]:
+        result = self.gh.reword(h, "rewarded top")
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -322,12 +321,12 @@ class MergeCommitTests(ChallengeBase):
         if len(non_merge) < 2:
             self.skipTest("need at least two non-merge commits")
 
-        self.gh.rebase("squash", hashes=[non_merge[0], non_merge[1]])
-        # Whether op succeeded or failed, read_state must work.
-        self.gh.rebase_abort()  # safe to call even if not in rebase
+        self.gh.squash([non_merge[0], non_merge[1]])        # Whether op succeeded or failed, read_state must work.
+        if self.gh.read_state().rebase_in_progress:
+            self.gh.rebase_abort()
         state = self.gh.read_state()
-        self.assertTrue(state["ok"])
-        self.assertFalse(state["rebase_in_progress"])
+        self.assertTrue(state.ok)
+        self.assertFalse(state.rebase_in_progress)
 
 
 # ---------------------------------------------------------------------------
@@ -345,20 +344,15 @@ class BinaryAndRenameTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_squash_two_binary_commits_succeeds(self):
         """Squash 'add binary' + 'update binary' — data.bin must have v2 content."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add binary"], bm["update binary"]]
-        )
-        self.assertTrue(result["ok"], f"squash of binary commits failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        # data.bin must still be present and contain the v2 bytes.
+        result = self.gh.squash([bm["add binary"], bm["update binary"]])
+        self.assertTrue(result.ok, f"squash of binary commits failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)        # data.bin must still be present and contain the v2 bytes.
         r = subprocess.run(
             ["git", "show", "HEAD:data.bin"],
             cwd=str(self.repo), capture_output=True
@@ -371,10 +365,10 @@ class BinaryAndRenameTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase("fixup", hashes=[bm["update binary"]])
-        self.assertTrue(result["ok"], f"fixup of binary commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["update binary"]])
+        self.assertTrue(result.ok, f"fixup of binary commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("update binary", msgs)
 
     def test_squash_across_rename_preserves_renamed_file(self):
@@ -382,11 +376,8 @@ class BinaryAndRenameTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["rename to docs"], bm["update docs"]]
-        )
-        self.assertTrue(result["ok"], f"squash across rename failed: {result}")
+        result = self.gh.squash([bm["rename to docs"], bm["update docs"]])
+        self.assertTrue(result.ok, f"squash across rename failed: {result}")
         files = _ls_tree(self.repo, "HEAD")
         self.assertIn("docs.txt", files)
         self.assertNotIn("readme.txt", files)
@@ -396,18 +387,16 @@ class BinaryAndRenameTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase("fixup", hashes=[bm["rename to docs"]])
-        self.assertTrue(result["ok"], f"fixup of rename commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.fixup([bm["rename to docs"]])
+        self.assertTrue(result.ok, f"fixup of rename commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_reword_rename_commit_preserves_rename(self):
         """Reword the rename commit; the tree must still show docs.txt, not readme.txt."""
         bm = self._by_msg()
         h = bm["rename to docs"]
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="mv readme → docs")
-        self.assertTrue(result["ok"], f"reword failed: {result}")
-
+        result = self.gh.reword(h, "mv readme → docs")
+        self.assertTrue(result.ok, f"reword failed: {result}")
         new_h = self._by_msg(result).get("mv readme → docs")
         self.assertIsNotNone(new_h)
         files_at_commit = _ls_tree(self.repo, new_h)
@@ -418,8 +407,8 @@ class BinaryAndRenameTests(ChallengeBase):
         """show() must succeed on a commit that touches a binary file."""
         bm = self._by_msg()
         result = self.gh.show(bm["add binary"])
-        self.assertTrue(result["ok"], f"show() failed on binary commit: {result}")
-        self.assertIn("data.bin", result["diff"])
+        self.assertTrue(result.ok, f"show() failed on binary commit: {result}")
+        self.assertIn("data.bin", result.diff)
 
 
 # ---------------------------------------------------------------------------
@@ -435,24 +424,20 @@ class CreateDeleteFileTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_squash_create_and_delete_produces_commit_without_temp_file(self):
         """Squash 'add temp' + 'delete temp': the combined commit must not contain temp.txt."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add temp"], bm["delete temp"]]
-        )
-        self.assertTrue(result["ok"], f"squash of create+delete failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+        result = self.gh.squash([bm["add temp"], bm["delete temp"]])
+        self.assertTrue(result.ok, f"squash of create+delete failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
 
         # The combined commit is the one that replaced both — it's at the position
         # of 'add temp' in the new history (between 'after delete' and 'initial').
-        combined = result["commits"][1]  # after delete=0, combined=1, initial=2
-        files_in_combined = _ls_tree(self.repo, combined["hash"])
+        combined = result.commits[1]  # after delete=0, combined=1, initial=2
+        files_in_combined = _ls_tree(self.repo, combined.commit_hash)
         self.assertNotIn("temp.txt", files_in_combined,
                          "temp.txt must not exist in the squashed commit's tree")
 
@@ -461,17 +446,16 @@ class CreateDeleteFileTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase("fixup", hashes=[bm["delete temp"]])
-        self.assertTrue(result["ok"], f"fixup of delete commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        # 'delete temp' message is gone (folded in).
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["delete temp"]])
+        self.assertTrue(result.ok, f"fixup of delete commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)        # 'delete temp' message is gone (folded in).
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("delete temp", msgs)
 
     def test_squash_create_delete_working_tree_has_no_temp_file(self):
         """After squash, temp.txt must not exist in the working tree."""
         bm = self._by_msg()
-        self.gh.rebase("squash", hashes=[bm["add temp"], bm["delete temp"]])
+        self.gh.squash([bm["add temp"], bm["delete temp"]])
         self.assertFalse((self.repo / "temp.txt").exists(),
                          "temp.txt present in working tree after squash of create+delete")
 
@@ -484,11 +468,8 @@ class CreateDeleteFileTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add temp"], bm["after delete"]]
-        )
-        if not result["ok"]:
+        result = self.gh.squash([bm["add temp"], bm["after delete"]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -507,18 +488,17 @@ class EmptyCommitTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_fixup_empty_commit_into_real_predecessor(self):
         """Fixup the empty commit: it folds into 'real A' and vanishes."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
         self.assertIn("empty B", bm)
 
-        result = self.gh.rebase("fixup", hashes=[bm["empty B"]])
-        self.assertTrue(result["ok"], f"fixup of empty commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.fixup([bm["empty B"]])
+        self.assertTrue(result.ok, f"fixup of empty commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        msgs = [c.message for c in result.commits]
         self.assertNotIn("empty B", msgs)
         self.assertIn("real A", msgs)
 
@@ -527,21 +507,17 @@ class EmptyCommitTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["empty B"], bm["real A"]]
-        )
-        self.assertTrue(result["ok"], f"squash with empty commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.squash([bm["empty B"], bm["real A"]])
+        self.assertTrue(result.ok, f"squash with empty commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_reword_empty_commit(self):
         """Reword an empty commit: message changes, no file changes."""
         bm = self._by_msg()
         h = bm["empty B"]
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="placeholder commit")
-        self.assertTrue(result["ok"], f"reword of empty commit failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(h, "placeholder commit")
+        self.assertTrue(result.ok, f"reword of empty commit failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("placeholder commit", msgs)
         self.assertNotIn("empty B", msgs)
 
@@ -549,8 +525,8 @@ class EmptyCommitTests(ChallengeBase):
         """show() on the empty commit must return an empty diff."""
         bm = self._by_msg()
         result = self.gh.show(bm["empty B"])
-        self.assertTrue(result["ok"], f"show() failed on empty commit: {result}")
-        self.assertEqual(result["diff"].strip(), "",
+        self.assertTrue(result.ok, f"show() failed on empty commit: {result}")
+        self.assertEqual(result.diff.strip(), "",
                          "empty commit should produce an empty diff")
 
     def test_squash_real_commit_then_empty_commit_then_real_commit(self):
@@ -558,13 +534,9 @@ class EmptyCommitTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase(
-            "squash",
-            hashes=[bm["real A"], bm["empty B"], bm["real C"]]
-        )
-        self.assertTrue(result["ok"], f"3-way squash including empty commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 2)
-        # a.txt must have the v2 content from 'real C'.
+        result = self.gh.squash([bm["real A"], bm["empty B"], bm["real C"]])
+        self.assertTrue(result.ok, f"3-way squash including empty commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 2)        # a.txt must have the v2 content from 'real C'.
         r = _git(self.repo, "git", "show", "HEAD:a.txt")
         # 'real C' writes v2; that should be in the squash result unless ordering changed.
         self.assertEqual(r.returncode, 0)
@@ -588,71 +560,60 @@ class UndoRedoTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_undo_squash_via_reset_to_pre_squash_head(self):
         """After squash, resetting to pre-squash HEAD restores original commit count."""
         state_before = self.gh.read_state()
-        count_before = len(state_before["commits"])
-        pre_squash_head = state_before["commits"][0]["hash"]
+        count_before = len(state_before.commits)
+        pre_squash_head = state_before.commits[0].commit_hash
         bm = self._by_msg(state_before)
 
-        squash_result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add binary"], bm["update binary"]]
-        )
-        self.assertTrue(squash_result["ok"], f"squash failed: {squash_result}")
+        squash_result = self.gh.squash([bm["add binary"], bm["update binary"]])
+        self.assertTrue(squash_result.ok, f"squash failed: {squash_result}")
 
         # Pre-squash HEAD must be in branch_history.
-        bh_hashes = {e["hash"] for e in squash_result["branch_history"]}
+        bh_hashes = {e.commit_hash for e in squash_result.branch_history}
         self.assertIn(pre_squash_head, bh_hashes,
                       "pre-squash HEAD not in branch_history — undo impossible")
 
         undo = self.gh.reset(pre_squash_head)
-        self.assertTrue(undo["ok"], f"undo (reset) failed: {undo}")
-        self.assertEqual(undo["commits"][0]["hash"], pre_squash_head)
-        self.assertEqual(len(undo["commits"]), count_before)
-
+        self.assertTrue(undo.ok, f"undo (reset) failed: {undo}")
+        self.assertEqual(undo.commits[0].commit_hash, pre_squash_head)
+        self.assertEqual(len(undo.commits), count_before)
     def test_redo_after_undo_restores_squash(self):
         """After undo, resetting to post-squash HEAD restores the squash result."""
         state_before = self.gh.read_state()
         bm = self._by_msg(state_before)
-        pre_squash_head = state_before["commits"][0]["hash"]
+        pre_squash_head = state_before.commits[0].commit_hash
 
-        squash_result = self.gh.rebase(
-            "squash",
-            hashes=[bm["add binary"], bm["update binary"]]
-        )
-        self.assertTrue(squash_result["ok"])
-        post_squash_head = squash_result["commits"][0]["hash"]
-        count_after_squash = len(squash_result["commits"])
-
+        squash_result = self.gh.squash([bm["add binary"], bm["update binary"]])
+        self.assertTrue(squash_result.ok)
+        post_squash_head = squash_result.commits[0].commit_hash
+        count_after_squash = len(squash_result.commits)
         self.gh.reset(pre_squash_head)  # undo
 
         undo_state = self.gh.read_state()
-        bh_hashes = {e["hash"] for e in undo_state["branch_history"]}
+        bh_hashes = {e.commit_hash for e in undo_state.branch_history}
         self.assertIn(post_squash_head, bh_hashes,
                       "post-squash HEAD not in branch_history after undo — redo impossible")
 
         redo = self.gh.reset(post_squash_head)
-        self.assertTrue(redo["ok"], f"redo (reset) failed: {redo}")
-        self.assertEqual(redo["commits"][0]["hash"], post_squash_head)
-        self.assertEqual(len(redo["commits"]), count_after_squash)
-
+        self.assertTrue(redo.ok, f"redo (reset) failed: {redo}")
+        self.assertEqual(redo.commits[0].commit_hash, post_squash_head)
+        self.assertEqual(len(redo.commits), count_after_squash)
     def test_undo_fixup_restores_both_original_commit_messages(self):
         """After fixup, undo must restore the fixup'd commit message."""
         state_before = self.gh.read_state()
         bm = self._by_msg(state_before)
-        pre_fixup_head = state_before["commits"][0]["hash"]
-        count_before = len(state_before["commits"])
+        pre_fixup_head = state_before.commits[0].commit_hash
+        count_before = len(state_before.commits)
 
-        fixup_result = self.gh.rebase("fixup", hashes=[bm["update binary"]])
-        self.assertTrue(fixup_result["ok"])
-
+        fixup_result = self.gh.fixup([bm["update binary"]])
+        self.assertTrue(fixup_result.ok)
         undo = self.gh.reset(pre_fixup_head)
-        self.assertTrue(undo["ok"])
-        self.assertEqual(len(undo["commits"]), count_before)
-        msgs = [c["message"] for c in undo["commits"]]
+        self.assertTrue(undo.ok)
+        self.assertEqual(len(undo.commits), count_before)
+        msgs = [c.message for c in undo.commits]
         self.assertIn("update binary", msgs,
                       "fixup'd commit message not restored after undo")
 
@@ -660,50 +621,46 @@ class UndoRedoTests(ChallengeBase):
         """Two squashes then two undos: each undo must restore the previous state."""
         state0 = self.gh.read_state()
         bm0 = self._by_msg(state0)
-        head0 = state0["commits"][0]["hash"]
-        count0 = len(state0["commits"])
+        head0 = state0.commits[0].commit_hash
+        count0 = len(state0.commits)
 
         # Squash 1: combine binary commits.
-        r1 = self.gh.rebase("squash", hashes=[bm0["add binary"], bm0["update binary"]])
-        self.assertTrue(r1["ok"])
-        head1 = r1["commits"][0]["hash"]
-        count1 = len(r1["commits"])
+        r1 = self.gh.squash([bm0["add binary"], bm0["update binary"]])
+        self.assertTrue(r1.ok)
+        head1 = r1.commits[0].commit_hash
+        count1 = len(r1.commits)
         self.assertEqual(count1, count0 - 1)
 
         # Squash 2: combine rename + update docs (non-binary, different files).
         bm1 = self._by_msg(r1)
         if "rename to docs" in bm1 and "update docs" in bm1:
-            r2 = self.gh.rebase(
-                "squash",
-                hashes=[bm1["rename to docs"], bm1["update docs"]]
-            )
-            self.assertTrue(r2["ok"])
-            count2 = len(r2["commits"])
+            r2 = self.gh.squash([bm1["rename to docs"], bm1["update docs"]])
+            self.assertTrue(r2.ok)
+            count2 = len(r2.commits)
             self.assertEqual(count2, count1 - 1)
 
             # Undo squash 2: reset to head1.
             u2 = self.gh.reset(head1)
-            self.assertTrue(u2["ok"])
-            self.assertEqual(len(u2["commits"]), count1)
+            self.assertTrue(u2.ok)
+            self.assertEqual(len(u2.commits), count1)
 
         # Undo squash 1: reset to head0.
         u1 = self.gh.reset(head0)
-        self.assertTrue(u1["ok"])
-        self.assertEqual(len(u1["commits"]), count0)
+        self.assertTrue(u1.ok)
+        self.assertEqual(len(u1.commits), count0)
 
     def test_undo_reword_restores_original_message(self):
         """After reword, undo via reset restores the original commit message."""
         state_before = self.gh.read_state()
         bm = self._by_msg(state_before)
         h = bm["update docs"]
-        pre_reword_head = state_before["commits"][0]["hash"]
+        pre_reword_head = state_before.commits[0].commit_hash
 
-        rw = self.gh.rebase("reword", hashes=[h], new_message="polished docs update")
-        self.assertTrue(rw["ok"])
-
+        rw = self.gh.reword(h, "polished docs update")
+        self.assertTrue(rw.ok)
         undo = self.gh.reset(pre_reword_head)
-        self.assertTrue(undo["ok"])
-        msgs = [c["message"] for c in undo["commits"]]
+        self.assertTrue(undo.ok)
+        msgs = [c.message for c in undo.commits]
         self.assertIn("update docs", msgs)
         self.assertNotIn("polished docs update", msgs)
 
@@ -722,62 +679,60 @@ class SequentialOperationsTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_squash_then_reword_then_squash(self):
         """Three sequential operations must each succeed and leave valid state."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        r1 = self.gh.rebase("squash", hashes=[bm["add temp"], bm["delete temp"]])
-        self.assertTrue(r1["ok"], f"first squash failed: {r1}")
+        r1 = self.gh.squash([bm["add temp"], bm["delete temp"]])
+        self.assertTrue(r1.ok, f"first squash failed: {r1}")
         self.assert_valid_state(r1)
 
-        oldest = r1["commits"][-1]
-        r2 = self.gh.rebase("reword", hashes=[oldest["hash"]], new_message="reworded base")
-        self.assertTrue(r2["ok"], f"reword after squash failed: {r2}")
+        oldest = r1.commits[-1]
+        r2 = self.gh.reword(oldest.commit_hash, "reworded base")
+        self.assertTrue(r2.ok, f"reword after squash failed: {r2}")
         self.assert_valid_state(r2)
 
-        if len(r2["commits"]) >= 2:
-            h_top  = r2["commits"][0]["hash"]
-            h_next = r2["commits"][1]["hash"]
-            r3 = self.gh.rebase("squash", hashes=[h_top, h_next])
-            self.assertTrue(r3["ok"], f"second squash failed: {r3}")
+        if len(r2.commits) >= 2:
+            h_top  = r2.commits[0].commit_hash
+            h_next = r2.commits[1].commit_hash
+            r3 = self.gh.squash([h_top, h_next])
+            self.assertTrue(r3.ok, f"second squash failed: {r3}")
             self.assert_valid_state(r3)
 
     def test_commit_count_decrements_by_one_per_fixup(self):
         """Each fixup must reduce commit count by exactly one."""
         state = self.gh.read_state()
-        count = len(state["commits"])
+        count = len(state.commits)
         bm = self._by_msg(state)
 
-        r1 = self.gh.rebase("fixup", hashes=[bm["delete temp"]])
-        self.assertTrue(r1["ok"])
-        self.assertEqual(len(r1["commits"]), count - 1)
+        r1 = self.gh.fixup([bm["delete temp"]])
+        self.assertTrue(r1.ok)
+        self.assertEqual(len(r1.commits), count - 1)
         count -= 1
 
         bm2 = self._by_msg(r1)
-        r2 = self.gh.rebase("fixup", hashes=[bm2["after delete"]])
-        self.assertTrue(r2["ok"])
-        self.assertEqual(len(r2["commits"]), count - 1)
-
+        r2 = self.gh.fixup([bm2["after delete"]])
+        self.assertTrue(r2.ok)
+        self.assertEqual(len(r2.commits), count - 1)
     def test_interleaved_squash_and_reword_preserve_all_other_messages(self):
         """After squash + reword, commits not involved must still have original messages."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        r1 = self.gh.rebase("squash", hashes=[bm["add temp"], bm["delete temp"]])
-        self.assertTrue(r1["ok"])
-        msgs1 = {c["message"] for c in r1["commits"]}
+        r1 = self.gh.squash([bm["add temp"], bm["delete temp"]])
+        self.assertTrue(r1.ok)
+        msgs1 = {c.message for c in r1.commits}
         self.assertIn("initial",     msgs1)
         self.assertIn("after delete", msgs1)
 
         bm2 = self._by_msg(r1)
         h_after = bm2.get("after delete")
         if h_after:
-            r2 = self.gh.rebase("reword", hashes=[h_after], new_message="post-squash top")
-            self.assertTrue(r2["ok"])
-            msgs2 = {c["message"] for c in r2["commits"]}
+            r2 = self.gh.reword(h_after, "post-squash top")
+            self.assertTrue(r2.ok)
+            msgs2 = {c.message for c in r2.commits}
             self.assertIn("initial", msgs2,
                           "'initial' commit message changed by unrelated reword")
 
@@ -964,13 +919,12 @@ class UnicodeAndSpecialCharTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_read_state_returns_unicode_messages(self):
         """read_state must correctly return unicode commit messages including emoji and CJK."""
         state = self.gh.read_state()
         self.assert_valid_state(state)
-        msgs = [c["message"] for c in state["commits"]]
+        msgs = [c.message for c in state.commits]
         self.assertTrue(any("☕" in m or "café" in m for m in msgs),
                         "unicode emoji commit not found in state")
         self.assertTrue(any("日本語" in m for m in msgs),
@@ -979,59 +933,59 @@ class UnicodeAndSpecialCharTests(ChallengeBase):
     def test_squash_commits_with_unicode_filenames(self):
         """Squash two commits that create unicode-named files."""
         state = self.gh.read_state()
-        hashes = [state["commits"][0]["hash"], state["commits"][1]["hash"]]
-        result = self.gh.rebase("squash", hashes=hashes)
-        if not result["ok"]:
+        hashes = [state.commits[0].commit_hash, state.commits[1].commit_hash]
+        result = self.gh.squash(hashes)
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
-            self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+            self.assertEqual(len(result.commits), len(state.commits) - 1)
 
     def test_reword_commit_with_shell_special_chars_in_message(self):
         """Reword a commit whose original message contains $, quotes, and &."""
         state = self.gh.read_state()
-        h = state["commits"][0]["hash"]  # 'update: 日本語 ($special & "quotes")'
-        result = self.gh.rebase("reword", hashes=[h], new_message="cleaned up message")
-        self.assertTrue(result["ok"], f"reword with special-char original message failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        h = state.commits[0].commit_hash  # 'update: 日本語 ($special & "quotes")'
+        result = self.gh.reword(h, "cleaned up message")
+        self.assertTrue(result.ok, f"reword with special-char original message failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("cleaned up message", msgs)
 
     def test_reword_to_message_containing_shell_special_chars(self):
         """Reword a commit to a new message that itself contains $, quotes, and backticks."""
         state = self.gh.read_state()
-        h = state["commits"][1]["hash"]
+        h = state.commits[1].commit_hash
         new_msg = 'fix: handle $PATH, "quoted args", and `backticks`'
-        result = self.gh.rebase("reword", hashes=[h], new_message=new_msg)
-        self.assertTrue(result["ok"], f"reword to special-char new message failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(h, new_msg)
+        self.assertTrue(result.ok, f"reword to special-char new message failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn(new_msg, msgs)
 
     def test_show_commit_with_unicode_filename(self):
         """show() must succeed on a commit that creates a unicode-named file."""
         state = self.gh.read_state()
         # 'add résumé.txt' is the second-oldest commit.
-        h = state["commits"][-2]["hash"]
+        h = state.commits[-2].commit_hash
         result = self.gh.show(h)
-        self.assertTrue(result["ok"], f"show() failed on unicode-filename commit: {result}")
+        self.assertTrue(result.ok, f"show() failed on unicode-filename commit: {result}")
 
     def test_fixup_unicode_commit_into_predecessor(self):
         """Fixup the newest commit (unicode filename + special-char message) into predecessor."""
         state = self.gh.read_state()
-        h_top = state["commits"][0]["hash"]
-        result = self.gh.rebase("fixup", hashes=[h_top])
-        if not result["ok"]:
+        h_top = state.commits[0].commit_hash
+        result = self.gh.fixup([h_top])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
-            self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+            self.assertEqual(len(result.commits), len(state.commits) - 1)
 
     def test_reword_to_emoji_message(self):
         """Reword a commit message to one that is itself pure emoji."""
         state = self.gh.read_state()
-        h = state["commits"][0]["hash"]
-        result = self.gh.rebase("reword", hashes=[h], new_message="🚀 ship it")
-        self.assertTrue(result["ok"], f"reword to emoji message failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        h = state.commits[0].commit_hash
+        result = self.gh.reword(h, "🚀 ship it")
+        self.assertTrue(result.ok, f"reword to emoji message failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("🚀 ship it", msgs)
 
 
@@ -1056,12 +1010,12 @@ class ConflictingContentTests(ChallengeBase):
         Result must be ok=False with a clean repo, or ok=True with valid state.
         """
         state = self.gh.read_state()
-        order = [c["hash"] for c in state["commits"]]
+        order = [c.commit_hash for c in state.commits]
         self.assertGreaterEqual(len(order), 2)
         order[0], order[1] = order[1], order[0]
 
-        result = self.gh.rebase("move", order=order)
-        if not result["ok"]:
+        result = self.gh.move(order)
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -1069,43 +1023,42 @@ class ConflictingContentTests(ChallengeBase):
     def test_repo_is_clean_after_conflict_and_abort(self):
         """After a conflicting move + explicit abort, read_state must show no rebase in progress."""
         state = self.gh.read_state()
-        order = [c["hash"] for c in state["commits"]]
+        order = [c.commit_hash for c in state.commits]
         order[0], order[1] = order[1], order[0]
 
-        self.gh.rebase("move", order=order)
+        self.gh.move(order)
         self.gh.rebase_abort()
 
         state_after = self.gh.read_state()
-        self.assertTrue(state_after["ok"])
-        self.assertFalse(state_after["rebase_in_progress"])
-        self.assertFalse(state_after["dirty"])
+        self.assertTrue(state_after.ok)
+        self.assertFalse(state_after.rebase_in_progress)
+        self.assertFalse(state_after.dirty)
 
     def test_commit_count_unchanged_after_failed_conflict(self):
         """After a failed conflicting move + abort, commit count must be the same as before."""
         state_before = self.gh.read_state()
-        count_before = len(state_before["commits"])
-        order = [c["hash"] for c in state_before["commits"]]
+        count_before = len(state_before.commits)
+        order = [c.commit_hash for c in state_before.commits]
         order[0], order[1] = order[1], order[0]
 
-        self.gh.rebase("move", order=order)
+        self.gh.move(order)
         self.gh.rebase_abort()
 
         state_after = self.gh.read_state()
-        self.assertEqual(len(state_after["commits"]), count_before)
+        self.assertEqual(len(state_after.commits), count_before)
 
     def test_head_hash_unchanged_after_failed_conflict(self):
         """HEAD must point to the same commit after a failed move + abort."""
         state_before = self.gh.read_state()
-        head_before = state_before["commits"][0]["hash"]
-        order = [c["hash"] for c in state_before["commits"]]
+        head_before = state_before.commits[0].commit_hash
+        order = [c.commit_hash for c in state_before.commits]
         order[0], order[1] = order[1], order[0]
 
-        self.gh.rebase("move", order=order)
+        self.gh.move(order)
         self.gh.rebase_abort()
 
         state_after = self.gh.read_state()
-        self.assertEqual(state_after["commits"][0]["hash"], head_before,
-                         "HEAD changed after failed conflicting move + abort")
+        self.assertEqual(state_after.commits[0].commit_hash, head_before,                         "HEAD changed after failed conflicting move + abort")
 
     def test_squash_non_adjacent_commits_with_conflicting_middle_pick(self):
         """
@@ -1114,12 +1067,12 @@ class ConflictingContentTests(ChallengeBase):
         The repo must be recoverable regardless of outcome.
         """
         state = self.gh.read_state()
-        bm = {c["message"]: c["hash"] for c in state["commits"]}
+        bm = {c.message: c.commit_hash for c in state.commits}
         if "version A" not in bm or "initial" not in bm:
             self.skipTest("expected commits not found")
 
-        result = self.gh.rebase("squash", hashes=[bm["version A"], bm["initial"]])
-        if not result["ok"]:
+        result = self.gh.squash([bm["version A"], bm["initial"]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
@@ -1139,13 +1092,12 @@ class TaggedCommitTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_read_state_with_tagged_commits_succeeds(self):
         """read_state must work normally even when commits carry annotated and lightweight tags."""
         state = self.gh.read_state()
         self.assert_valid_state(state)
-        self.assertGreaterEqual(len(state["commits"]), 3)
+        self.assertGreaterEqual(len(state.commits), 3)
 
     def test_squash_two_tagged_commits(self):
         """Squash the annotated-tagged and lightweight-tagged commits."""
@@ -1154,12 +1106,12 @@ class TaggedCommitTests(ChallengeBase):
         self.assertIn("bump version",  bm)
         self.assertIn("release notes", bm)
 
-        result = self.gh.rebase("squash", hashes=[bm["bump version"], bm["release notes"]])
-        if not result["ok"]:
+        result = self.gh.squash([bm["bump version"], bm["release notes"]])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
-            self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+            self.assertEqual(len(result.commits), len(state.commits) - 1)
 
     def test_reword_annotated_tagged_commit(self):
         """Reword the commit carrying the annotated tag: the message must change."""
@@ -1167,11 +1119,11 @@ class TaggedCommitTests(ChallengeBase):
         bm = self._by_msg(state)
         h = bm["bump version"]
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="bump to v1.0.0")
-        if not result["ok"]:
+        result = self.gh.reword(h, "bump to v1.0.0")
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
-            msgs = [c["message"] for c in result["commits"]]
+            msgs = [c.message for c in result.commits]
             self.assertIn("bump to v1.0.0", msgs)
             self.assertNotIn("bump version", msgs)
 
@@ -1181,12 +1133,12 @@ class TaggedCommitTests(ChallengeBase):
         bm = self._by_msg(state)
         h = bm["bump version"]
 
-        result = self.gh.rebase("fixup", hashes=[h])
-        if not result["ok"]:
+        result = self.gh.fixup([h])
+        if not result.ok:
             self.assert_recoverable(self.gh)
         else:
             self.assert_valid_state(result)
-            msgs = [c["message"] for c in result["commits"]]
+            msgs = [c.message for c in result.commits]
             self.assertNotIn("bump version", msgs)
 
     def test_reset_to_pre_tag_commit(self):
@@ -1194,14 +1146,13 @@ class TaggedCommitTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
         result = self.gh.reset(bm["add version"])
-        self.assertTrue(result["ok"], f"reset past tagged commits failed: {result}")
-        self.assertEqual(result["commits"][0]["hash"], bm["add version"])
-
+        self.assertTrue(result.ok, f"reset past tagged commits failed: {result}")
+        self.assertEqual(result.commits[0].commit_hash, bm["add version"])
     def test_show_tagged_commit_succeeds(self):
         """show() on an annotated-tagged commit must return ok=True."""
         bm = self._by_msg()
         result = self.gh.show(bm["bump version"])
-        self.assertTrue(result["ok"], f"show() failed on tagged commit: {result}")
+        self.assertTrue(result.ok, f"show() failed on tagged commit: {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -1220,7 +1171,7 @@ class MultilineMessageTests(ChallengeBase):
         """read_state must return full multi-line messages, not just the subject line."""
         state = self.gh.read_state()
         self.assert_valid_state(state)
-        full = " ".join(c["message"] for c in state["commits"])
+        full = " ".join(c.message for c in state.commits)
         self.assertIn("Co-authored-by", full,
                       "trailer line missing from read_state commit message")
         self.assertIn("issue #42", full,
@@ -1229,47 +1180,46 @@ class MultilineMessageTests(ChallengeBase):
     def test_squash_multiline_message_commits(self):
         """Squash two multiline-message commits: commit count decreases by one."""
         state = self.gh.read_state()
-        hashes = [c["hash"] for c in state["commits"][:2]]
-        result = self.gh.rebase("squash", hashes=hashes)
-        self.assertTrue(result["ok"], f"squash of multiline-message commits failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        hashes = [c.commit_hash for c in state.commits[:2]]
+        result = self.gh.squash(hashes)
+        self.assertTrue(result.ok, f"squash of multiline-message commits failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_reword_multiline_commit_to_single_line(self):
         """Reword a multiline-message commit to a plain one-liner."""
         state = self.gh.read_state()
-        h = state["commits"][0]["hash"]
-        result = self.gh.rebase("reword", hashes=[h], new_message="simple one-liner")
-        self.assertTrue(result["ok"], f"reword multiline → simple failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        h = state.commits[0].commit_hash
+        result = self.gh.reword(h, "simple one-liner")
+        self.assertTrue(result.ok, f"reword multiline → simple failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertIn("simple one-liner", msgs)
 
     def test_reword_single_line_commit_to_multiline(self):
         """Reword the simple 'initial' commit to a multi-line message with a body."""
         state = self.gh.read_state()
-        h = state["commits"][-1]["hash"]
+        h = state.commits[-1].commit_hash
         new_msg = "initial commit\n\nCreates the base structure.\nSigned-off-by: Alice"
-        result = self.gh.rebase("reword", hashes=[h], new_message=new_msg)
-        self.assertTrue(result["ok"], f"reword to multiline failed: {result}")
-        msgs = [c["message"] for c in result["commits"]]
+        result = self.gh.reword(h, new_msg)
+        self.assertTrue(result.ok, f"reword to multiline failed: {result}")
+        msgs = [c.message for c in result.commits]
         self.assertTrue(any("initial commit" in m for m in msgs))
 
     def test_fixup_multiline_commit_discards_body(self):
         """Fixup a commit with a multi-line message: the body must not appear in result."""
         state = self.gh.read_state()
-        h = state["commits"][0]["hash"]
-        result = self.gh.rebase("fixup", hashes=[h])
-        self.assertTrue(result["ok"], f"fixup of multiline commit failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-        full_after = " ".join(c["message"] for c in result["commits"])
+        h = state.commits[0].commit_hash
+        result = self.gh.fixup([h])
+        self.assertTrue(result.ok, f"fixup of multiline commit failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        full_after = " ".join(c.message for c in result.commits)
         self.assertNotIn("issue #42", full_after,
                          "fixup'd commit body still present in result messages")
 
     def test_show_multiline_commit_returns_full_message(self):
         """show() must include the full multi-line message in its output."""
         state = self.gh.read_state()
-        h = state["commits"][0]["hash"]
+        h = state.commits[0].commit_hash
         result = self.gh.show(h)
-        self.assertTrue(result["ok"], f"show() failed on multiline commit: {result}")
+        self.assertTrue(result.ok, f"show() failed on multiline commit: {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -1286,23 +1236,22 @@ class SpacesInFilenamesTests(ChallengeBase):
 
     def _by_msg(self, state=None):
         s = state or self.gh.read_state()
-        return {c["message"]: c["hash"] for c in s["commits"]}
-
+        return {c.message: c.commit_hash for c in s.commits}
     def test_show_commit_with_spaced_filename_includes_filename_in_diff(self):
         """show() must include the space-containing filename in its diff output."""
         bm = self._by_msg()
         result = self.gh.show(bm["add spaced files"])
-        self.assertTrue(result["ok"], f"show() failed on spaced-filename commit: {result}")
-        self.assertIn("my document.txt", result["diff"])
+        self.assertTrue(result.ok, f"show() failed on spaced-filename commit: {result}")
+        self.assertIn("my document.txt", result.diff)
 
     def test_squash_commits_touching_spaced_filename(self):
         """Squash commits that both touch a file with spaces in its name."""
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase("squash", hashes=[bm["add spaced files"], bm["update docs"]])
-        self.assertTrue(result["ok"], f"squash with spaced filenames failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
+        result = self.gh.squash([bm["add spaced files"], bm["update docs"]])
+        self.assertTrue(result.ok, f"squash with spaced filenames failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
         files = _ls_tree(self.repo, "HEAD")
         self.assertIn("my document.txt", files)
 
@@ -1311,10 +1260,9 @@ class SpacesInFilenamesTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        result = self.gh.rebase("fixup", hashes=[bm["update docs"]])
-        self.assertTrue(result["ok"], f"fixup with spaced filenames failed: {result}")
-        self.assertEqual(len(result["commits"]), len(state["commits"]) - 1)
-
+        result = self.gh.fixup([bm["update docs"]])
+        self.assertTrue(result.ok, f"fixup with spaced filenames failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
     def test_reword_commit_touching_spaced_file_preserves_tree(self):
         """Reword a commit that touches a spaced-name file: tree must be identical."""
         state = self.gh.read_state()
@@ -1322,10 +1270,10 @@ class SpacesInFilenamesTests(ChallengeBase):
         h = bm["add spaced files"]
         old_tree = _git(self.repo, "git", "rev-parse", h + ":").stdout.strip()
 
-        result = self.gh.rebase("reword", hashes=[h], new_message="add files with spaces")
-        self.assertTrue(result["ok"], f"reword with spaced filenames failed: {result}")
+        result = self.gh.reword(h, "add files with spaces")
+        self.assertTrue(result.ok, f"reword with spaced filenames failed: {result}")
 
-        new_bm = {c["message"]: c["hash"] for c in result["commits"]}
+        new_bm = {c.message: c.commit_hash for c in result.commits}
         new_h = new_bm.get("add files with spaces")
         self.assertIsNotNone(new_h, "rewarded commit not found by new message")
         new_tree = _git(self.repo, "git", "rev-parse", new_h + ":").stdout.strip()
@@ -1336,14 +1284,12 @@ class SpacesInFilenamesTests(ChallengeBase):
         state = self.gh.read_state()
         bm = self._by_msg(state)
 
-        r1 = self.gh.rebase("squash", hashes=[bm["add spaced files"], bm["update docs"]])
-        self.assertTrue(r1["ok"])
+        r1 = self.gh.squash([bm["add spaced files"], bm["update docs"]])
+        self.assertTrue(r1.ok)
 
-        bm2 = {c["message"]: c["hash"] for c in r1["commits"]}
-        top = r1["commits"][0]
-        r2 = self.gh.rebase("reword", hashes=[top["hash"]], new_message="merged docs")
-        self.assertTrue(r2["ok"])
-
+        top = r1.commits[0]
+        r2 = self.gh.reword(top.commit_hash, "merged docs")
+        self.assertTrue(r2.ok)
         files = _ls_tree(self.repo, "HEAD")
         self.assertIn("my document.txt", files,
                       "spaced filename missing from HEAD after squash + reword")
@@ -1361,29 +1307,29 @@ class NearRootEdgeCaseTests(ChallengeBase):
         repo = _build_single_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        self.assertTrue(state["ok"])
-        self.assertEqual(len(state["commits"]), 1)
+        self.assertTrue(state.ok)
+        self.assertEqual(len(state.commits), 1)
 
     def test_show_root_commit(self):
         """show() on the root commit (no parent) must succeed."""
         repo = _build_single_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        h = state["commits"][0]["hash"]
+        h = state.commits[0].commit_hash
         result = gh.show(h)
-        self.assertTrue(result["ok"], f"show() failed on root commit: {result}")
+        self.assertTrue(result.ok, f"show() failed on root commit: {result}")
 
     def test_squash_only_two_commits_in_repo(self):
         """Squash the only two commits: result is one commit, or fails cleanly."""
         repo = _build_two_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        hashes = [c["hash"] for c in state["commits"]]
+        hashes = [c.commit_hash for c in state.commits]
         self.assertEqual(len(hashes), 2)
 
-        result = gh.rebase("squash", hashes=hashes)
-        if result["ok"]:
-            self.assertEqual(len(result["commits"]), 1)
+        result = gh.squash(hashes)
+        if result.ok:
+            self.assertEqual(len(result.commits), 1)
         else:
             self.assert_recoverable(gh)
 
@@ -1392,12 +1338,12 @@ class NearRootEdgeCaseTests(ChallengeBase):
         repo = _build_two_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        h_top = state["commits"][0]["hash"]
+        h_top = state.commits[0].commit_hash
 
-        result = gh.rebase("fixup", hashes=[h_top])
-        if result["ok"]:
-            self.assertEqual(len(result["commits"]), 1)
-            self.assertEqual(result["commits"][0]["message"], "initial")
+        result = gh.fixup([h_top])
+        if result.ok:
+            self.assertEqual(len(result.commits), 1)
+            self.assertEqual(result.commits[0].message, "initial")
         else:
             self.assert_recoverable(gh)
 
@@ -1406,11 +1352,11 @@ class NearRootEdgeCaseTests(ChallengeBase):
         repo = _build_two_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        h_root = state["commits"][-1]["hash"]
+        h_root = state.commits[-1].commit_hash
 
-        result = gh.rebase("reword", hashes=[h_root], new_message="project start")
-        if result["ok"]:
-            msgs = [c["message"] for c in result["commits"]]
+        result = gh.reword(h_root, "project start")
+        if result.ok:
+            msgs = [c.message for c in result.commits]
             self.assertIn("project start", msgs)
         else:
             self.assert_recoverable(gh)
@@ -1420,22 +1366,21 @@ class NearRootEdgeCaseTests(ChallengeBase):
         repo = _build_two_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        h_root = state["commits"][-1]["hash"]
+        h_root = state.commits[-1].commit_hash
 
         result = gh.reset(h_root)
-        self.assertTrue(result["ok"], f"reset to root failed: {result}")
-        self.assertEqual(result["commits"][0]["hash"], h_root)
-        self.assertEqual(len(result["commits"]), 1)
-
+        self.assertTrue(result.ok, f"reset to root failed: {result}")
+        self.assertEqual(result.commits[0].commit_hash, h_root)
+        self.assertEqual(len(result.commits), 1)
     def test_squash_on_single_commit_repo_fails_cleanly(self):
         """Squash with no second commit to fold into must fail without corrupting the repo."""
         repo = _build_single_commit_repo(self.tmpdir)
         gh = GitHistory(str(repo))
         state = gh.read_state()
-        h = state["commits"][0]["hash"]
+        h = state.commits[0].commit_hash
 
-        result = gh.rebase("squash", hashes=[h])
-        if not result["ok"]:
+        result = gh.squash([h])
+        if not result.ok:
             self.assert_recoverable(gh)
         else:
             self.assert_valid_state(result)
