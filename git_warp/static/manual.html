@@ -31,7 +31,7 @@ strong { font-weight: 600; }
   <h1>git warp — Manual</h1>
 
   <h2>What is git warp?</h2>
-  <p><code>git warp</code> is a local web app for interactively rewriting your git history, and it includes a full undo/redo stack. It lets you reorder, squash, fixup, and reword commits through a drag-and-drop interface in the browser.</p>
+  <p><code>git warp</code> is a git UI that lets you interactively rewrite your git history with a full undo/redo. It lets you reorder, squash, fixup, and reword commits through a drag-and-drop interface in the browser.</p>
   <p>It is intended for keeping feature branches tidy. All operations affect only the current local branch — nothing is pushed to the remote. If the rewritten parts of a branch have been pushed to a remote before the history rewrite, 
     it can be force pushed to the remote, but this is not recommended if other people are working on the same branch.</p>
   <p>All changes are applied to the repo <strong> immediately </strong> and all changes can be undone:</p>
@@ -63,6 +63,9 @@ strong { font-weight: 600; }
   <h2>Uncommitted changes</h2>
   <p>Reorder, squash, fixup, reword, reset, and branch create/delete are all blocked when the working tree has uncommitted changes. Use <strong>Stash</strong> to set them aside, perform your operations, then <strong>Stash Pop</strong> to restore them.</p>
 
+  <h2>Empty commits</h2>
+  <p>If an operation leaves a commit with no changes — reordering a commit past the one that reverts it, or squashing commits whose changes cancel out — that commit is kept, and stays in the list with its message. Nothing is removed that you did not ask to remove. Your files are unaffected, because the change was already there; only the commit is empty, and clicking it shows an empty diff. To get rid of one, fixup or squash it into a neighbour.</p>
+
   <h2>Toolbar</h2>
   <p><strong>Branch</strong> — a dropdown showing the current branch. Select a different local branch to switch to it. Blocked when there are uncommitted changes or a rebase is in progress.</p>
   <p><strong>Squash</strong> — appears when two or more commits are selected. Combines them into one commit; the message is the combined messages of all selected commits.</p>
@@ -78,7 +81,7 @@ strong { font-weight: 600; }
     <li><strong>Select multiple</strong> — click a commit, then Shift-click another to select the range. Press Escape to deselect.</li>
     <li><strong>Squash</strong> — select two or more commits, then click the Squash button in the toolbar. The messages of all selected commits are combined.</li>
     <li><strong>Fixup</strong> — hover a commit to reveal the Fixup button. Folds that commit into the one below it, discarding its message.</li>
-    <li><strong>Reword</strong> — right-click a commit and choose <strong>Edit commit message</strong> to edit its message in place. Confirm with Ctrl+Enter (Cmd+Enter on Mac) or by clicking outside. Press Escape to cancel.</li>
+    <li><strong>Reword</strong> — hover a commit to reveal the pencil (✏️) button, then click it to edit its message in place. Confirm with Ctrl+Enter (Cmd+Enter on Mac) or by clicking outside. Press Escape to cancel.</li>
     <li><strong>Reset</strong> — right-click a commit and choose <strong>Reset branch to here</strong> to reset the branch to that commit. Requires a clean working tree.</li>
     <li><strong>Create branch</strong> — right-click a commit and choose <strong>Create new branch</strong>, then enter a name. Requires a clean working tree.</li>
     <li><strong>Delete branch</strong> — right-click a branch badge and choose <strong>Delete Branch</strong>. The current branch cannot be deleted, and an unmerged branch is refused to avoid losing commits. Requires a clean working tree.</li>

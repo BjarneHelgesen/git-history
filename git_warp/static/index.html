@@ -15,13 +15,14 @@
     <div id="toolbar">
       <img src="/static/logo-light.svg" id="toolbar-logo-light" alt="git warp" class="toolbar-logo">
       <img src="/static/logo-dark.svg" id="toolbar-logo-dark" alt="git warp" class="toolbar-logo">
-      <label for="branch-select">Branch:</label>
-      <select id="branch-select"></select>
+      <h2 id="commits-title"><strong>Commit History</strong></h2>
       <span id="toolbar-right">
+        <label for="branch-select">Branch:</label>
+        <select id="branch-select"></select>
         <button id="btn-squash" class="hidden" title="Squash selected commits into one">Squash</button>
         <button id="btn-stash" class="hidden" title="Stash uncommitted changes">Stash</button>
         <button id="btn-stash-pop" class="hidden" title="Restore stashed changes">Stash Pop</button>
-        <button id="btn-refresh" title="Reload commit list">Refresh</button>
+        <button id="btn-refresh" title="Refresh">🔄️</button>
         <button id="commits-help-btn" title="Help">?</button>
       </span>
     </div>
@@ -30,10 +31,10 @@
   <div id="undo-stack-panel">
     <div id="undo-stack-header">
       <div id="undo-stack-buttons">
-        <button id="btn-undo" title="Undo">↶</button>
-        <button id="btn-redo" title="Redo">↷</button>
+        <button id="btn-undo" title="Undo">◀️</button>
+        <button id="btn-redo" title="Redo">▶️</button>
       </div>
-      <h2 id="undo-stack-title"><span><strong>Undo Stack</strong> (Expiry: <span id="undo-stack-expiry"></span>)</span><span><button id="undo-stack-help-btn" title="Help">?</button><button id="btn-quit" title="Quit">&times;</button></span></h2>
+      <h2 id="undo-stack-title"><span><span id="undo-stack-branch"></span> <strong>Undo Stack</strong> (Expiry: <span id="undo-stack-expiry"></span>)</span><span><button id="undo-stack-help-btn" title="Help">?</button><button id="btn-quit" title="Quit">&times;</button></span></h2>
     </div>
     <div id="undo-stack-list"></div>
   </div>
@@ -61,13 +62,13 @@
       <li>When two or more commits are selected, click the Squash button to combine them into a single commit where the commit message is the combined messages of all the commits.</li>
       <li>Right-click a commit to open a context menu with the following actions:
         <ul>
-          <li><strong>Edit commit message</strong> — edit the message in place. Press Ctrl+Enter (Cmd+Enter on Mac) to confirm, or Escape to cancel.</li>
           <li><strong>Create new branch</strong> — create a new branch pointing to that commit.</li>
           <li><strong>Reset branch to here</strong> — hard-reset the current branch to that commit.</li>
           <li><strong>Delete Branch</strong> — delete a local branch (available when right-clicking a branch badge).</li>
         </ul>
       </li>
       <li>Select a single commit, then in the diff pane click the files you want to move out and click the Split Commit button. The commit is split into two — the unselected files, then the selected files — each keeping the original message.</li>
+      <li>Click the 📜️ button next to the commit hash to copy the full commit hash, or next to the message to copy the commit message to your clipboard.</li>
     </ul>
     <p>If a rebase produces a merge conflict, a dialog will appear letting you resolve the conflict in your editor and then continue, or abort and return to the original state.</p>
     <p><em>Tip: drag related commits together first, then use squash or fixup.</em></p>
@@ -85,6 +86,7 @@
       <li><strong>Undo</strong> go one step backwards in the Undo Stack.</li>
       <li><strong>Redo</strong> go one step forward in the Undo Stack.</li>
       <li><strong>Double-click</strong> an entry to reset the branch to that state.</li>
+      <li>Click the 📜️ button next to a commit hash to copy the full hash to your clipboard.</li>
     </ul>
     <p>The Undo Stack contains only unique modifications to the branch. If a branch is reset to a previous state, the new tip of the branch is not unique and will not be an entry in the Undo Stack. Undo, Redo and Reset actions are non-unique modifications and are not added as new entries to the Undo Stack. </p>
     <p>The Undo Stack shows the local branch changes — commits, rebases, resets — regardless of whether they were made inside or outside <code>git warp</code>.</p>
@@ -98,7 +100,6 @@
 <div id="diff-pane" class="hidden"><div id="diff-resize"></div><div id="diff-files"><button id="btn-split" class="hidden" title="Split the selected files into a new commit">Split Commit</button></div><pre id="diff-content"></pre></div>
 <div id="footer"><a href="/manual" target="_blank">Manual</a> &mdash; <a id="log-link" href="/log" target="_blank">Log</a> &mdash; Built by <a href="http://helgesen.software" target="_blank" rel="noopener">Helgesen Software AS</a></div>
 <div id="context-menu" class="hidden">
-  <div id="ctx-reword">Edit commit message</div>
   <div id="ctx-create-branch">Create new branch</div>
   <div id="ctx-reset">Reset branch to here</div>
   <div id="ctx-delete-branch">Delete Branch</div>

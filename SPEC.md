@@ -12,7 +12,7 @@ See [README.md](README.md) for an overview.
 | `--undo [N]` | N=1 | Reset HEAD back N steps in the Undo Stack and exit. |
 | `--redo [N]` | N=1 | Reset HEAD forward N steps in the Undo Stack and exit. |
 | `--dark` | off | Force dark mode in the browser UI. |
-| `--ligth` | off | Force light mode in the browser UI. |
+| `--light` | off | Force light mode in the browser UI. |
 
 ## Startup
 
@@ -51,6 +51,18 @@ git status --porcelain --untracked-files=no
 If the output is non-empty, the operation is refused.
 
 The UI shows a persistent banner when the working tree is dirty and disables all rebase, reset, reword, and delete actions until the next refresh reports it clean.
+
+## Empty Commits
+
+An operation never removes a commit the user did not ask to remove. A commit that ends up with no changes is kept, empty, and stays in the list with its message.
+
+This covers three cases:
+
+- **Replays to nothing** — a reorder moves a commit past the one reverting it, so its changes are already in its new parent. `--empty=keep` keeps it and the rebase does not pause.
+- **Squash or fixup with an empty combined diff** — e.g. a commit creating a file folded with the one deleting it. Git pauses here (it refuses to amend a commit into emptiness) and `--empty=` does not apply; `git rebase --continue` commits it empty. The fold itself still reduces the commit count, as any squash does.
+- **Already empty** — a commit created with `git commit --allow-empty` survives every operation unchanged.
+
+The working tree is unaffected in all three cases: the change was already present, so only the commit record is empty. Removing an unwanted empty commit is an explicit fixup or squash.
 
 ## REST API
 
@@ -159,7 +171,7 @@ Fields:
 
 Two-column layout: Commit History (left) and Undo Stack (right).
 
-Commit row elements (left to right): drag handle `⠿`, short hash, ref badges (blue=branch, green=tag), message, author, date. Row-hover action: fixup (image button). States: default, selected (blue), dragging, editing.
+Commit row elements (left to right): drag handle `⠿`, short hash, ref badges (blue=branch, green=tag), message, author, date. Row-hover action: fixup (⤵). States: default, selected (blue), dragging, editing.
 
 Toolbar: logo, branch switcher, action buttons. Status banner below (dirty tree, errors). Spinner overlay while request in flight.
 
@@ -171,9 +183,9 @@ Toolbar: logo, branch switcher, action buttons. Status banner below (dirty tree,
 
 **Squash:** Floating action bar when ≥2 consecutive selected. Sends `POST /api/rebase/squash` with hashes.
 
-**Fixup:** Row-hover image button (disabled on root). Sends fixup operation.
+**Fixup:** Row-hover button ⤵ (disabled on root). Sends fixup operation.
 
-**Reword:** Right-click commit row → context-menu item "Edit commit message" → inline edit. Ctrl/Cmd+Enter or blur-with-changes sends reword. Escape/blur-without-changes cancels.
+**Reword:** Row-hover pencil button (✏️) between message and author → inline edit. Ctrl/Cmd+Enter or blur-with-changes sends reword. Escape/blur-without-changes cancels.
 
 **Split:** Select a single commit; the diff pane lists its files. Click files to choose a strict, non-empty subset (Shift-click extends a range, Ctrl/Cmd-click toggles individual files). The "Split Commit" button (in the diff pane) sends `POST /api/rebase/split` with `commit_hash` and `files_to_split`. The button is shown only for a single non-staged commit with ≥2 files, and is enabled only while a strict subset is selected. The commit is replaced by two: the unselected files, then the selected files, both reusing its author and message.
 

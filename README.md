@@ -1,10 +1,14 @@
 # git warp
 
+[![PyPI version](https://img.shields.io/pypi/v/git-warp)](https://pypi.org/project/git-warp/)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE.md)
+
 Rewrite git history in your browser with unlimited undo.
 Reorder, squash, fixup, reword, and split commits.
 
-Run git warp from inside any git repository, after stashing or committing changes. The Web UI uses the installed git version to rewrite history and provide full undo. 
+Run git warp from inside any git repository, after stashing or committing changes. The UI uses the installed git version to rewrite history and provide full undo. 
 
+![git warp UI](docs/screenshot.png)
 
 ## Install
 
@@ -22,8 +26,8 @@ Run from inside any git repository:
 git warp
 ```
 
-This opens your web UI to rewrite your commit history. 
-The manual can be opened from the web UI.
+This opens a git UI to rewrite your commit history. 
+The manual can be opened from the UI.
 
 
 ## Requirements

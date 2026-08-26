@@ -149,6 +149,27 @@ def _build_binary_and_rename_repo(parent: Path) -> Path:
     return repo
 
 
+def _build_revert_pair_repo(parent: Path) -> Path:
+    """
+    Repo where the newest commit reverts the one before it.
+
+    Commits (newest first):
+      "revert timeout bump" — config.txt back to TIMEOUT = 30
+      "bump timeout"        — config.txt to TIMEOUT = 60
+      "add config"          — creates config.txt with TIMEOUT = 30
+
+    Moving "bump timeout" to the top replays "revert timeout bump" onto
+    "add config", where TIMEOUT is already 30, so it becomes empty.
+    """
+    repo = parent / "revert-pair-repo"
+    repo.mkdir()
+    init_repo(repo)
+
+    _commit_raw(repo, "config.txt", b"TIMEOUT = 30\n", "add config",          "alice", 0)
+    _commit_raw(repo, "config.txt", b"TIMEOUT = 60\n", "bump timeout",        "bob",   1)
+    _commit_raw(repo, "config.txt", b"TIMEOUT = 30\n", "revert timeout bump", "carol", 2)
+    return repo
+
 
 # ---------------------------------------------------------------------------
 # Base test class
@@ -472,6 +493,20 @@ class CreateDeleteFileTests(ChallengeBase):
         self.assertNotIn("temp.txt", files_in_combined,
                          "temp.txt must not exist in the squashed commit's tree")
 
+    def test_squash_create_and_delete_keeps_the_empty_result(self):
+        """The combined diff is empty; the squashed commit is kept, not dropped."""
+        state = self.gh.read_state()
+        bm = self._by_msg(state)
+
+        result = self.gh.squash([bm["add temp"], bm["delete temp"]])
+        self.assertTrue(result.ok, f"squash of create+delete failed: {result}")
+        self.assertFalse(result.conflict, "empty squash reported as a conflict")
+        self.assertFalse(result.rebase_in_progress, "rebase left unfinished")
+        # Only the fold itself removes a commit; the empty result is kept.
+        self.assertEqual(len(result.commits), len(state.commits) - 1)
+        self.assertEqual(self.gh.show(result.commits[0].commit_hash).diff.strip(), "",
+                         "the squashed commit should have no changes left")
+
     def test_fixup_delete_into_add_produces_no_temp_file(self):
         """Fixup 'delete temp' into 'add temp': combined tree must not have temp.txt."""
         state = self.gh.read_state()
@@ -590,6 +625,68 @@ class EmptyCommitTests(ChallengeBase):
         r = _git(self.repo, "git", "show", "HEAD:a.txt")
         # 'real C' writes v2; that should be in the squash result unless ordering changed.
         self.assertEqual(r.returncode, 0)
+
+
+@pytest.mark.release
+class BecomesEmptyOnReorderTests(ChallengeBase):
+    """
+    A commit that is not empty to start with, but whose changes are already
+    present in its new parent after a reorder, is kept empty — see SPEC.md
+    "Empty Commits". --empty=keep lets the rebase run straight through, so no
+    commit is lost and there is no pause to mistake for a conflict.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="git-warp-challenge-"))
+        cls.repo = _build_revert_pair_repo(cls.tmpdir)
+        cls.branch = _git(cls.repo, "git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        cls.initial_head = _git(cls.repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def setUp(self):
+        _restore_repo(self.repo, self.branch, self.initial_head)
+        self.gh = GitWarp(str(self.repo))
+
+    def tearDown(self):
+        pass
+
+    def _move_bump_to_top(self):
+        """Drag "bump timeout" to the top; returns (state before, move result)."""
+        state = self.gh.read_state()
+        bump = self._by_msg(state)["bump timeout"]
+        order = [c.commit_hash for c in state.commits if c.commit_hash != bump]
+        return state, self.gh.move([bump] + order)
+
+    def test_emptied_commit_is_kept_in_the_requested_order(self):
+        state, result = self._move_bump_to_top()
+        self.assertTrue(result.ok, f"move failed: {result}")
+        self.assertEqual(len(result.commits), len(state.commits))
+        self.assertEqual([c.message for c in result.commits],
+                         ["bump timeout", "revert timeout bump", "add config"])
+
+    def test_kept_commit_has_an_empty_diff(self):
+        _, result = self._move_bump_to_top()
+        self.assertTrue(result.ok, f"move failed: {result}")
+        emptied = self._by_msg(result)["revert timeout bump"]
+        self.assertEqual(self.gh.show(emptied).diff.strip(), "",
+                         "the emptied commit should have no changes left")
+
+    def test_reorder_does_not_pause_the_rebase(self):
+        _, result = self._move_bump_to_top()
+        self.assertFalse(result.conflict, "empty commit reported as a conflict")
+        self.assertEqual(result.conflict_files, [])
+        self.assertFalse(result.rebase_in_progress, "rebase left unfinished")
+
+    def test_emptied_commit_leaves_the_requested_tree(self):
+        _, result = self._move_bump_to_top()
+        self.assertTrue(result.ok, f"move failed: {result}")
+        # "bump timeout" is now newest, so its content is what remains.
+        self.assertEqual(_git(self.repo, "git", "show", "HEAD:config.txt").stdout.strip(),
+                         "TIMEOUT = 60")
 
 
 # ---------------------------------------------------------------------------
@@ -1034,6 +1131,7 @@ class ConflictingContentTests(ChallengeBase):
         self.assertEqual(state_after.commits[0].commit_hash, head_before,                         "HEAD changed after failed conflicting move + abort")
 
 
+@pytest.mark.release
 class MultiConflictContinueTests(ChallengeBase):
     """Regression: a rebase that conflicts again after the first conflict is
     resolved must surface the second conflict, not a generic git failure.
