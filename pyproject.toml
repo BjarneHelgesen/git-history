@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-warp"
-version = "0.1.5"
+version = "0.1.6"
 description = "Edit git commit history with full undo"
 readme = "README.md"
 license = {file = "LICENSE.md"}
