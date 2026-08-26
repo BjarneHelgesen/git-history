@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -78,5 +79,13 @@ def _commit_raw(repo, relpath, data, message, author_key, day_offset):
                    env=env, check=True, capture_output=True)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _patch_werkzeug_version():
+    """Workaround for Flask test client compatibility with newer werkzeug.
 
-
+    Newer werkzeug versions removed __version__; Flask's test client needs it.
+    """
+    import werkzeug
+    if not hasattr(werkzeug, "__version__"):
+        from importlib.metadata import version
+        werkzeug.__version__ = version("werkzeug")

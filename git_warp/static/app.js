@@ -41,12 +41,12 @@
   const $btnSquash   = document.getElementById("btn-squash");
   const $btnQuit     = document.getElementById("btn-quit");
   const $contextMenu = document.getElementById("context-menu");
-  const $ctxReword        = document.getElementById("ctx-reword");
   const $ctxCreateBranch  = document.getElementById("ctx-create-branch");
   const $ctxReset         = document.getElementById("ctx-reset");
   const $ctxDeleteBranch  = document.getElementById("ctx-delete-branch");
   const $commitsList = document.getElementById("commits-list");
   const $undoStackList  = document.getElementById("undo-stack-list");
+  const $undoStackBranch = document.getElementById("undo-stack-branch");
   const $undoStackExpiry = document.getElementById("undo-stack-expiry");
   const $conflictModal = document.getElementById("conflict-modal");
   const $conflictModalTitle = document.getElementById("conflict-modal-title");
@@ -141,6 +141,7 @@
   // ---- Render ----
   function render() {
     if (!state) return;
+    $undoStackBranch.textContent = state.branch;
     $undoStackExpiry.textContent = state.reflog_expiry;
 
     // Branch dropdown
@@ -202,6 +203,20 @@
     updateActionBar();
   }
 
+  function createCopyButton(title, getText) {
+    const btn = document.createElement("button");
+    btn.textContent = "📜️";
+    btn.title = title;
+    btn.className = "row-icon-btn";
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      hideContextMenu();
+      // Clipboard write failures have no user-visible recovery, so the promise is intentionally left unhandled.
+      navigator.clipboard.writeText(getText());
+    });
+    return btn;
+  }
+
   function createCommitRow(commit, idx) {
     const row = document.createElement("div");
     row.className = "commit-row" + (selected.has(commit.commit_hash) ? " selected" : "") + (commit.is_head ? " is-head" : "");
@@ -212,6 +227,7 @@
     const handle = document.createElement("span");
     handle.className = "drag-handle";
     handle.textContent = "⠿";
+    handle.title = "Drag to reorder";
     if (commit.commit_hash !== STAGED_HASH) {
       handle.draggable = true;
       handle.addEventListener("dragstart", onDragStart);
@@ -226,11 +242,20 @@
     cloud.textContent = commit.pushed ? "☁" : "";
     row.appendChild(cloud);
 
-    // Short hash
+    // Short hash section (with copy button on top)
+    const hashSection = document.createElement("span");
+    hashSection.className = "hash-section";
+
     const sh = document.createElement("span");
     sh.className = "short-hash";
     sh.textContent = commit.short_hash;
-    row.appendChild(sh);
+    hashSection.appendChild(sh);
+
+    const btnCopyHash = createCopyButton("Copy commit hash", function () { return commit.commit_hash; });
+    btnCopyHash.disabled = commit.commit_hash === STAGED_HASH;
+    hashSection.appendChild(btnCopyHash);
+
+    row.appendChild(hashSection);
 
     // Badges
     const badges = document.createElement("span");
@@ -261,11 +286,33 @@
     });
     row.appendChild(badges);
 
-    // Message
+    // Message section (with edit button on top)
+    const msgSection = document.createElement("span");
+    msgSection.className = "message-section";
+
+    const btnEdit = document.createElement("button");
+    btnEdit.textContent = "✏️";
+    btnEdit.title = "Edit commit message";
+    btnEdit.className = "row-icon-btn row-icon-btn-2nd";
+    btnEdit.disabled = !canMutate() || commit.commit_hash === STAGED_HASH;
+    btnEdit.addEventListener("click", function (e) {
+      e.stopPropagation();
+      hideContextMenu();
+      selectAndRefresh(commit.commit_hash);
+      startReword(row, commit);
+    });
+    msgSection.appendChild(btnEdit);
+
+    const btnCopyMsg = createCopyButton("Copy commit message", function () { return commit.message; });
+    btnCopyMsg.disabled = commit.commit_hash === STAGED_HASH;
+    msgSection.appendChild(btnCopyMsg);
+
     const msg = document.createElement("span");
     msg.className = "message";
     msg.textContent = commit.message;
-    row.appendChild(msg);
+    msgSection.appendChild(msg);
+
+    row.appendChild(msgSection);
 
     // Author
     const author = document.createElement("span");
@@ -273,43 +320,43 @@
     author.textContent = commit.author;
     row.appendChild(author);
 
-    // Date
-    const dt = document.createElement("span");
-    dt.className = "date";
-    dt.textContent = commit.date ? commit.date.slice(0, 16) : "";
-    row.appendChild(dt);
-
-    // Row actions
-    const actions = document.createElement("span");
-    actions.className = "row-actions";
+    // Date section (with fixup button on top)
+    const dateSection = document.createElement("span");
+    dateSection.className = "date-section";
 
     const btnFixup = document.createElement("button");
-    btnFixup.innerHTML = '<img src="/static/fixup.png" width="18" height="18" alt="Fixup">';
+    btnFixup.textContent = "⤵️";
     btnFixup.title = "Fixup";
-    btnFixup.className = "btn-fixup";
+    btnFixup.className = "row-icon-btn";
     btnFixup.disabled = !canMutate() || commit.commit_hash === STAGED_HASH || idx === state.commits.length - 1;
     btnFixup.addEventListener("click", function (e) {
       e.stopPropagation();
+      hideContextMenu();
       doRebase("fixup", {commit_hashes: [commit.commit_hash]}, idx);
     });
-    actions.appendChild(btnFixup);
+    dateSection.appendChild(btnFixup);
 
-    row.appendChild(actions);
+    const dt = document.createElement("span");
+    dt.className = "date";
+    dt.textContent = commit.date ? commit.date.slice(0, 16) : "";
+    dateSection.appendChild(dt);
+
+    row.appendChild(dateSection);
 
     // Click to select
     row.addEventListener("click", function (e) {
-      if (e.target.closest(".row-actions, .drag-handle")) return;
+      if (e.target.closest(".row-icon-btn, .drag-handle")) return;
       onRowClick(commit.commit_hash, idx, e);
     });
 
     row.addEventListener("contextmenu", function (e) {
-      if (e.target.closest(".row-actions, .drag-handle, [data-branch]")) return;
+      if (e.target.closest(".row-icon-btn, .drag-handle, [data-branch]")) return;
       e.preventDefault();
       if (commit.commit_hash === STAGED_HASH) return;
       selectAndRefresh(commit.commit_hash);
       if (!canMutate()) return;
       e.stopPropagation();
-      showContextMenu(e.clientX, e.clientY, commitMenuItems(commit, row));
+      showContextMenu(e.clientX, e.clientY, commitMenuItems(commit));
     });
 
     // Branch badge right-click → commit actions + delete branch (local, non-current branches only)
@@ -320,7 +367,7 @@
         e.stopPropagation();
         selectAndRefresh(commit.commit_hash);
         if (!canMutate()) return;
-        const items = commitMenuItems(commit, row);
+        const items = commitMenuItems(commit);
         const deletable = branchName !== state.branch && state.branches.indexOf(branchName) !== -1;
         items.deleteBranch = deletable ? function () {
           hideContextMenu();
@@ -352,10 +399,18 @@
       const row = document.createElement("div");
       row.className = "undo-stack-row" + (isHead ? " is-head" : "");
 
+      const hashSection = document.createElement("span");
+      hashSection.className = "hash-section";
+
       const hashSpan = document.createElement("span");
       hashSpan.className = "undo-stack-hash";
       hashSpan.textContent = entry.commit_hash.slice(0, 7);
-      row.appendChild(hashSpan);
+      hashSection.appendChild(hashSpan);
+
+      const btnCopyHash = createCopyButton("Copy commit hash", function () { return entry.commit_hash; });
+      hashSection.appendChild(btnCopyHash);
+
+      row.appendChild(hashSection);
 
       const labelSpan = document.createElement("span");
       labelSpan.className = "undo-stack-label";
@@ -430,23 +485,20 @@
     });
   }
 
-  // Reword/createBranch/reset items shared by the commit-row and branch-badge menus.
-  function commitMenuItems(commit, row) {
+  // createBranch/reset items shared by the commit-row and branch-badge menus.
+  function commitMenuItems(commit) {
     return {
-      reword: function () { hideContextMenu(); startReword(row, commit); },
       createBranch: function () { createBranchAt(commit.commit_hash); },
       reset: commit.is_head ? null : function () { hideContextMenu(); doReset(commit.commit_hash); },
     };
   }
 
   function showContextMenu(x, y, items) {
-    // items: {reword, createBranch, reset, deleteBranch} — each is a callback or null
-    $ctxReword.classList.toggle("hidden", !items.reword);
+    // items: {createBranch, reset, deleteBranch} — each is a callback or null
     $ctxCreateBranch.classList.toggle("hidden", !items.createBranch);
     $ctxReset.classList.toggle("hidden", !items.reset);
     $ctxDeleteBranch.classList.toggle("hidden", !items.deleteBranch);
 
-    $ctxReword.onclick = items.reword || null;
     $ctxCreateBranch.onclick = items.createBranch || null;
     $ctxReset.onclick = items.reset || null;
     $ctxDeleteBranch.onclick = items.deleteBranch || null;
@@ -516,25 +568,42 @@
     return null;
   }
 
+  function createDragGhost(row, selectedRows, clientX, clientY) {
+    const rect = row.getBoundingClientRect();
+    // Browser applies a transparency gradient from the drag anchor point to the edges of the drag image.
+    // We add padding (especially right/top/bottom) to keep the content in a zone where the gradient
+    // doesn't make it too transparent. Left padding is unnecessary since the drag handle is on the left.
+    const ghostWidth = rect.width * 3; // 2x right padding
+    const ghostHeight = rect.height * selectedRows.length * 4; // Padding on both top and bottom
+
+    const ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.style.cssText = "width:" + ghostWidth + "px; height:" + ghostHeight + "px; display:flex; align-items:center; justify-content:flex-start;";
+    const content = document.createElement("div");
+    content.style.width = rect.width + "px";
+    selectedRows.forEach(function (r) { content.appendChild(r.cloneNode(true)); });
+    ghost.appendChild(content);
+    document.body.appendChild(ghost);
+
+    return {
+      element: ghost,
+      offsetX: clientX - rect.left,
+      offsetY: (ghostHeight - selectedRows.length * rect.height) / 2 + (selectedRows.indexOf(row) * rect.height) + (clientY - rect.top)
+    };
+  }
+
   function onDragStart(e) {
     const row = e.target.closest(".commit-row");
     const hash = row.dataset.commitHash;
     if (!canMutate() || busy || hash === STAGED_HASH) { e.preventDefault(); return; }
     if (!selected.has(hash)) { setSingleSelection(hash); applySelectionClasses(); updateActionBar(); }
 
-    // Custom drag image: a stack of the selected rows, with the cursor anchored
-    // on the grabbed row so the multi-selection moves naturally under it.
     const selectedRows = Array.from($commitsList.querySelectorAll(".commit-row"))
       .filter(function (r) { return selected.has(r.dataset.commitHash); });
-    const rect = row.getBoundingClientRect();
-    const ghost = document.createElement("div");
-    ghost.className = "drag-ghost";
-    ghost.style.width = rect.width + "px";
-    selectedRows.forEach(function (r) { ghost.appendChild(r.cloneNode(true)); });
-    document.body.appendChild(ghost);
-    const offsetY = selectedRows.indexOf(row) * rect.height + (e.clientY - rect.top);
-    e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, offsetY);
-    setTimeout(function () { ghost.remove(); }, 0);
+
+    const dragImage = createDragGhost(row, selectedRows, e.clientX, e.clientY);
+    e.dataTransfer.setDragImage(dragImage.element, dragImage.offsetX, dragImage.offsetY);
+    setTimeout(function () { dragImage.element.remove(); }, 0);
 
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", hash); // Firefox needs a payload to start a drag

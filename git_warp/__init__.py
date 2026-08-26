@@ -68,7 +68,7 @@ def main():
             print(f"No log file at {log_path}")
         sys.exit(0)
 
-    # Require git >= 2.26.
+    # Require git >= 2.26, the first release with rebase --empty=.
     try:
         r = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False)
         parts = r.stdout.strip().split()  # "git version X.Y.Z"

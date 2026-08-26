@@ -4,6 +4,7 @@ UI regression tests using Playwright against a live Flask server.
 Requires: pip install pytest-playwright && playwright install chromium
 Run with: python -m pytest tests/test_ui.py -v
 """
+import json
 import subprocess
 import sys
 import threading
@@ -161,10 +162,9 @@ def test_all_ui(page, ui_live_server):
     oldest.hover()
     assert oldest.locator("button[title='Fixup']").is_disabled()
 
-    # Section 4: Inline reword via context menu
-    page.locator(".commit-row").nth(0).click(button="right")
-    page.wait_for_selector("#context-menu:not(.hidden)")
-    page.locator("#ctx-reword").click()
+    # Section 4: Inline reword via pencil button
+    page.locator(".commit-row").nth(0).hover()
+    page.locator(".commit-row").nth(0).locator("button[title='Edit commit message']").click()
     ta = page.locator(".reword-input")
     ta.wait_for()
     ta.fill("reworded message")
@@ -174,9 +174,8 @@ def test_all_ui(page, ui_live_server):
 
     # Section 5: additional rewords
     for msg in ["first reword", "second reword"]:
-        page.locator(".commit-row").nth(0).click(button="right")
-        page.wait_for_selector("#context-menu:not(.hidden)")
-        page.locator("#ctx-reword").click()
+        page.locator(".commit-row").nth(0).hover()
+        page.locator(".commit-row").nth(0).locator("button[title='Edit commit message']").click()
         ta = page.locator(".reword-input")
         ta.wait_for()
         ta.fill(msg)
@@ -200,9 +199,8 @@ def test_all_ui(page, ui_live_server):
     assert _selected_idx(page) == 2
 
     # Section 8: Reword preserves selection (24 still)
-    page.locator(".commit-row").nth(3).click(button="right")
-    page.wait_for_selector("#context-menu:not(.hidden)")
-    page.locator("#ctx-reword").click()
+    page.locator(".commit-row").nth(3).hover()
+    page.locator(".commit-row").nth(3).locator("button[title='Edit commit message']").click()
     ta = page.locator(".reword-input")
     ta.wait_for()
     ta.fill("reworded message 2")
@@ -296,7 +294,7 @@ def test_all_ui(page, ui_live_server):
     }""")
     assert page.locator(".drop-indicator").count() > 0
     assert page.locator("#commits-list[data-dragging]").count() == 1
-    assert page.evaluate("getComputedStyle(document.querySelector('.commit-row.dragging')).opacity") == "0.4"
+    assert page.evaluate("getComputedStyle(document.querySelector('.commit-row.dragging')).opacity") == "0.02"
     page.evaluate("""() => {
         document.querySelector('#commits-list').dispatchEvent(new DragEvent('dragend', { bubbles: true }));
     }""")
@@ -392,17 +390,16 @@ def test_context_menu(page, context_menu_server):
     page.goto(context_menu_server["url"])
     page.wait_for_selector(".commit-row")
 
-    # Section 1: Reword via context menu
-    page.locator(".commit-row").nth(0).click(button="right")
-    page.wait_for_selector("#context-menu:not(.hidden)")
-    page.locator("#ctx-reword").click()
+    # Section 1: Reword via pencil button
+    page.locator(".commit-row").nth(0).hover()
+    page.locator(".commit-row").nth(0).locator("button[title='Edit commit message']").click()
     ta = page.locator(".reword-input")
     ta.wait_for()
-    ta.fill("reworded via context menu")
+    ta.fill("reworded via pencil button")
     with page.expect_response("**/api/rebase/**"):
         ta.press("Control+Enter")
     page.wait_for_function("!document.querySelector('.reword-input')")
-    assert page.locator(".commit-row").nth(0).locator(".message").inner_text() == "reworded via context menu"
+    assert page.locator(".commit-row").nth(0).locator(".message").inner_text() == "reworded via pencil button"
 
     # Section 2: Dismiss by clicking outside
     page.locator(".commit-row").nth(0).click(button="right")
@@ -467,6 +464,63 @@ def test_context_menu(page, context_menu_server):
     page.locator(".commit-row").nth(0).click(button="right")
     page.wait_for_timeout(300)
     assert page.locator("#context-menu").evaluate("el => el.classList.contains('hidden')")
+
+
+@pytest.fixture
+def copy_buttons_server(tmp_path_factory):
+    yield from _setup_ui_server(tmp_path_factory, "ui-copy")
+
+
+@pytest.mark.release
+def test_copy_buttons(page, copy_buttons_server):
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.goto(copy_buttons_server["url"])
+    page.wait_for_selector(".commit-row")
+
+    def clipboard_text():
+        return page.evaluate("navigator.clipboard.readText()")
+
+    # Section 1: Copy commit hash from a commit row
+    row = page.locator(".commit-row").nth(1)
+    full_hash = row.get_attribute("data-commit-hash")
+    row.hover()
+    row.locator("button[title='Copy commit hash']").click()
+    page.wait_for_function(f"navigator.clipboard.readText().then(t => t === '{full_hash}')")
+    assert clipboard_text() == full_hash
+
+    # Section 2: Copy commit message from the same row
+    message = row.locator(".message").inner_text()
+    row.locator("button[title='Copy commit message']").click()
+    page.wait_for_function(f"navigator.clipboard.readText().then(t => t === {json.dumps(message)})")
+    assert clipboard_text() == message
+
+    # Section 3: Copy commit hash from the Undo Stack
+    # A fresh clone's branch reflog has only one entry ("clone: from ..."),
+    # so commit once to give the Undo Stack a second row to select.
+    (copy_buttons_server["repo"] / "extra.txt").write_text("extra")
+    subprocess.run(["git", "add", "extra.txt"], cwd=str(copy_buttons_server["repo"]),
+                    capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "extra commit"], cwd=str(copy_buttons_server["repo"]),
+                    capture_output=True, check=True)
+    page.locator("#btn-refresh").click()
+    page.wait_for_selector(".undo-stack-row.is-head")
+
+    undo_row = page.locator(".undo-stack-row").nth(1)
+    undo_hash = undo_row.locator(".undo-stack-hash").inner_text()
+    undo_row.hover()
+    undo_row.locator("button[title='Copy commit hash']").click()
+    page.wait_for_function(f"navigator.clipboard.readText().then(t => t.startsWith('{undo_hash}'))")
+    assert clipboard_text().startswith(undo_hash)
+
+    # Section 4: Copy buttons are disabled on the staged row
+    (copy_buttons_server["repo"] / "README.md").write_text("modified")
+    subprocess.run(["git", "add", "README.md"], cwd=str(copy_buttons_server["repo"]),
+                    capture_output=True, check=True)
+    page.locator("#btn-refresh").click()
+    page.wait_for_selector(".badge-staged")
+    staged_row = page.locator(".commit-row").filter(has=page.locator(".badge-staged"))
+    assert staged_row.locator("button[title='Copy commit hash']").is_disabled()
+    assert staged_row.locator("button[title='Copy commit message']").is_disabled()
 
 
 @pytest.fixture

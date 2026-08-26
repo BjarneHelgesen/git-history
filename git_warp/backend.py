@@ -467,7 +467,9 @@ class Git:
         try:
             todo_path = _write_tempfile("\n".join(todo_lines) + "\n")
             env = self._rebase_env(todo_path=todo_path, msg_path=msg_path)
-            cmd = ["git", "rebase", "-i", "--keep-empty", "--empty=keep"]
+            # --empty=keep: a commit that replays to nothing is kept, not dropped,
+            # so an operation never silently removes a commit. See SPEC.md.
+            cmd = ["git", "rebase", "-i", "--empty=keep"]
             cmd.append("--root" if base is None else base)
             r = self._run(cmd, env=env)
             if r.returncode != 0 and not self.in_rebase():
@@ -504,15 +506,18 @@ class GitWarp:
         # Load reflog expiry once at startup, not per read_state() call
         raw_expiry = self._git.config_value("gc.reflogExpireUnreachable")
         self._reflog_expiry = raw_expiry.replace('.', ' ') if raw_expiry else "30 days"
-        self._start = None
-        try:
-            self._start = self._git.resolve_commit(f"HEAD~{_HISTORY_DEPTH}")
-        except GitError:
-            pass
+        self._start = self._resolve_window_start()
 
     # ------------------------------------------------------------------
     # domain helpers
     # ------------------------------------------------------------------
+
+    def _resolve_window_start(self):
+        # None when history is shallower than the window depth: show it all.
+        try:
+            return self._git.resolve_commit(f"HEAD~{_HISTORY_DEPTH}")
+        except GitError:
+            return None
 
     @staticmethod
     def _truncate_diff(diff):
@@ -843,11 +848,7 @@ class GitWarp:
         if not allow_different_gitmodules and head_hash and self._git.get_gitmodules(head_hash) != self._git.get_gitmodules(self._git.resolve_commit(branch)):
             raise GitWarpError("gitmodules_differ")
         self._git.switch(branch)
-        self._start = None
-        try:
-            self._start = self._git.resolve_commit(f"HEAD~{_HISTORY_DEPTH}")
-        except GitError:
-            pass
+        self._start = self._resolve_window_start()
         return self.read_state(submodule_update_suggested=self._gitlinks_changed(head_hash))
 
     # ------------------------------------------------------------------
@@ -893,7 +894,7 @@ class GitWarp:
     #
     # All four mutating operations (move, squash, fixup, reword) build a
     # ``_RebaseInstructions`` and hand it to ``_rebase``, which writes the
-    # todo file, runs ``git rebase -i --keep-empty --empty=keep``, and
+    # todo file, runs ``git rebase -i --empty=keep``, and
     # cleans up. Commits are processed in the order git wants in the todo:
     # oldest first, even though the rest of this module is newest-first.
     #
@@ -1004,9 +1005,10 @@ class GitWarp:
             _unlink_safe(instr.msg_path)
 
     def _check_rebase_completed(self):
-        # Squashing commits whose combined diff is empty (e.g. a file that is
-        # created then deleted) leaves git paused mid-rebase despite
-        # --empty=keep. _drive_continue loops --continue to completion.
+        # A squash or fixup whose combined diff is empty pauses the rebase — git
+        # refuses to amend a commit into emptiness, and --empty=keep does not
+        # cover that path. _drive_continue runs --continue, which commits it
+        # empty. See SPEC.md "Empty Commits".
         if self._git.in_rebase():
             return self._drive_continue()
         return None
@@ -1146,7 +1148,7 @@ class GitWarp:
 
     def _drive_continue(self):
         # A rebase may pause multiple times: once per conflicting commit, and once
-        # per empty-commit that git asks to drop or keep. Loop until the rebase
+        # per squash or fixup that comes out empty. Loop until the rebase
         # finishes (in_rebase() returns False) or a conflict requires user action.
         while self._git.in_rebase():
             if self._git.conflict_files():
